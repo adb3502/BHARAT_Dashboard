@@ -1,0 +1,40 @@
+﻿Participant_ID	has_type2_diabetes	diabetes_duration_years	diabetes_medication	diabetes_particulars	has_hypertension	hypertension_duration_years	hypertension_medication	hypertension_particulars	has_ischemic_heart_disease	cardiac_disease_duration_years	cardiac_disease_medication	cardiac_disease_particulars	has_hypothyroidism	hypothyroidism_duration_years	hypothyroidism_medication	hypothyroidism_particulars	has_chronic_kidney_disease	kidney_disease_duration_years	kidney_disease_medication	kidney_disease_particulars	has_copd	copd_duration_years	copd_medication	copd_particulars	has_bronchial_asthma	asthma_duration_years	asthma_medication	asthma_particulars	has_epilepsy	epilepsy_duration_years	epilepsy_medication	epilepsy_particulars	has_psychiatric_illness	psychiatric_illness_duration_years	psychiatric_illness_medication	psychiatric_illness_particulars	had_past_surgery	time_since_surgery_years	post_surgery_medication	surgery_particulars	has_other_comorbidities	other_comorbidities_duration_years	other_comorbidities_medication	other_comorbidities_particulars
+1A-001	No				No				No				No				No				No				No				No				No				No				No			
+1A-002	No				No				No				No				No				No				No				No				No				No				No			
+1A-004	No				No				No				No				No				No				No				No				No				No				No			
+1A-005	No				No				No				No				No				No				No				No				No				No				No			
+1A-006	No				No				No				No				No				No				No				No				No				No				No			
+1A-007	No				No				No				No				No				No				No				No				No				No				No			
+1A-008	No				No				No				No				No				No				Yes	15 years (From infancy till 13 years)	Short acting medication on need (Maybe salbutamol)	none	No				No				No				No			
+1A-009	No				No				No				No				No				No				No				No				No				No				No			
+1A-010	No				No				No				No				No				No				No				No				No				No				No			
+1B-001	No				No				No				No				No				No				No				No				No				No				No			
+1B-002	No				No				No				No				No				No				No				No				No				No				No			
+1B-003	No				No				No				No				No				No				Yes	From birth, now its less frequent	Nebulization, Budecort, Duolin	nil	No				No				No				No			
+1B-004 	No				No				No				No				No				No				No				No				Yes	1.5	ESCITALOPRAM 	NIL	No				No			
+1B-005	No				No				No				No				No				No				No				No				No				No				No			
+1B-006	No				No				No				No				No				No				No				No				No				No				No			
+1B-007	No				No				No				No				No				No				No				No				No				No				No			
+1B-008	No				No				No				No				No				No				No				No				No				No				No			
+1B-009	No				No				No				No				No				No				No				No				No				No				No			
+1B-010	No				No				No				No				No				No				No				No				No				No				No			
+2A-008	No				No				No				No				No				No				No				No				No				No				No			
+2A-009	No				No				No				No				No				No				No				No				No				No				No			
+3B-001	No				No				No				No				No				No				No				No				No				No				No			
+3B-002	No				Yes	10 years	metoprolol 25mg	.	No				No				No				No				No				No				No				Yes	33 years ago	.	.	No			
+4A-001	No				No				No				No				No				No				No				No				No				No				Yes	7 Months- Trigeminal Neuralgia	Oxytol-300mg	Nil
+4A-002	No				Yes	42 years	Almighty-40, Hydrochloroseaside, Amlong	Nil	No				No				No				No				No				No				No				Yes	24 Years ago	Nil	Gall Bladder Removal, Cataract	No			
+4A-003	No				Yes	15YR	TAZLOC-40MG	NO	No				No				No				No				No				No				No				Yes	51YR	NO	ANAL FISSURE REPAIR	No			
+4A-004	No				No				No				No				No				No				No				No				No				No				No			
+4A-005	Yes	10 YEARS	TAB GLIMIPERIDE 1MG + TAB METFORMIN 500MG		Yes	10 YEARS	TAB TELMISARTAN 40MG	NO	No				No				No				No				No				No				No				No				No			
+4B-001	No				Yes	23 years	Telma AMH-40, Silkara- 5mg	Nil	No				No				No				No				No				Yes	1 Month	Vertin	Nil	No				Yes	50 years	Nil	Tonsils	No			
+4B-002	No				Yes	15 days	-	-	No				No				No				No				No				No				No				Yes	15 years	-	knee replacement surgery	No			
+4B-003	No				Yes	15 years	Telista-20mg	Nil	No				No				No				No				No				No				No				Yes	45 years	Nil	C-section	No			
+4B-004	Yes	2 years	Carbophage	Nil	No				No				Yes	More than 12 years	Thyronorm	Nil	No				No				No				No				No				Yes	2 years	Nil	Gall Bladder removal	No			
+4B-005	No				No				No				No				No				No				No				No				No				Yes	10 years	Nil	Sack water in kidney	Yes	4-5 years	Asoft and Gangfort- Eye drops	Nil
+4B-006	No				No				No				No				No				No				No				No				No				Yes	20 YEARS BACK	-	LUMPECTOMY	No			
+4B-007	Yes	14YR	TAB.DAPAGLITAZONE,SITAGLIPTAN	NO	No				No				Yes	14	10MCG,THYRONORM	NO	No				No				No				No				No				Yes	2YR	NO	HYSTERECTOMY,GALLBLADDER REMOVAL	No			
+5A-001	No				Yes	10	temasartan	excision of meningioma	No				No				No				No				No				No				No				Yes	23 years	-	excision of meningioma	Yes	ca prostate	tamsulin	radiotherapy
+5B-001	No				Yes	More than 30 years	Lipril-10mg	Nil	No				Yes	More than 30 years	Thyronorm-75mg	Nil	No				Yes	5-6 years	Hormonoid-200	Nil	No				No				No				Yes	1 year	Nil	Hernia	No			
+5B-002	No				No				No				No				No				No				Yes	1 month	Chlorokart	No	No				No				Yes	25 years 	Nil	Uterus removal	No			
+5B-004	Yes	15	TAB GLYCOMET 500MG 0-1/5-0	NO	No				No				No				No				No				No				No				No				No				No			

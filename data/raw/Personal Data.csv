@@ -1,0 +1,40 @@
+﻿Participant_ID	habits_data_collected	dietary_pattern_data_collected	exercise_habits_data_collected	food_frequency_data_collected	covid19_data_collected	medical_history_collected	dass21_completed
+1A-001	1	1	1	0	0	[]	0
+1A-002	1	1	1	1	1	['Diabetes']	1
+1A-004	1	1	1	1	1	['Diabetes', 'Cancer']	1
+1A-005	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+1A-006	1	1	1	0	0	[]	0
+1A-007	1	1	1	1	1	['Cardiovascular disease', 'Thyroid disorders']	1
+1A-008	1	1	1	1	1	['Cardiovascular disease']	1
+1A-009	1	1	1	1	1	['Cardiovascular disease']	1
+1A-010	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+1B-001	1	1	1	1	1	['Diabetes', 'Cardiovascular disease', 'Thyroid disorders']	1
+1B-002	1	1	1	1	1	['Diabetes']	1
+1B-003	1	1	1	0	0	[]	0
+1B-004 	1	1	1	1	1	['Diabetes', 'Cancer']	1
+1B-005	1	1	1	1	1	['Diabetes', 'Thyroid disorders']	1
+1B-006	1	1	1	1	1	['Diabetes', 'Thyroid disorders', 'Cardiovascular disease']	1
+1B-007	1	1	1	1	1	['Diabetes']	1
+1B-008	1	1	1	1	1	['Diabetes', 'Cardiovascular disease', 'Cancer']	1
+1B-009	1	1	1	1	1	['Diabetes']	1
+1B-010	1	1	1	1	1	[]	1
+2A-008	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+2A-009	1	1	1	1	1	['Cancer', 'Thyroid disorders']	1
+3B-001	1	1	1	1	1	['Diabetes', 'Cancer']	1
+3B-002	1	1	1	1	1	[]	1
+4A-001	1	1	1	1	1	['Cancer', 'Thyroid disorders']	1
+4A-002	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+4A-003	1	1	1	1	1	['Diabetes', 'Cardiovascular disease', 'Cancer']	1
+4A-004	1	1	1	1	1	[]	1
+4A-005	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+4B-001	1	1	1	1	1	['Diabetes', 'Cardiovascular disease']	1
+4B-002	1	1	1	1	1	['Cancer']	1
+4B-003	1	1	1	1	1	['Diabetes']	1
+4B-004	1	1	1	1	1	['Diabetes', 'Cancer', 'Thyroid disorders']	1
+4B-005	1	1	1	1	1	['Diabetes']	1
+4B-006	1	1	1	1	1	['Cancer']	1
+4B-007	1	1	1	1	1	['Cardiovascular disease', 'Diabetes']	1
+5A-001	1	1	1	1	1	[]	1
+5B-001	1	1	1	1	1	['Thyroid disorders']	1
+5B-002	1	1	1	1	1	['Diabetes', 'Cardiovascular disease', 'Cancer']	1
+5B-004	1	1	1	1	1	['Diabetes']	1

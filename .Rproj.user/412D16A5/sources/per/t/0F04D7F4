@@ -1,0 +1,26 @@
+{
+    "id": "0F04D7F4",
+    "path": "D:/Projects/FUSION-app/BHARAT_Dashboard/app/utils/data_loader.R",
+    "project_path": "app/utils/data_loader.R",
+    "type": "r_source",
+    "hash": "4189422414",
+    "contents": "",
+    "dirty": false,
+    "created": 1732771842537.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "178,38",
+        "scrollLine": "162"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1732772912,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1732772912695,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,117 @@
+# App Configuration
+
+# Data paths
+DATA_DIR <- "data/raw/"
+PROCESSED_DIR <- "data/processed/"
+
+# UI Configuration
+UI_CONFIG <- list(
+  title = "BHARAT Study Dashboard",
+  subtitle = "Clinical and Lifestyle Analysis",
+  theme_color = "blue",
+  font_family = "Manrope"
+)
+
+# Parameter Categories
+PARAMETER_CATEGORIES <- list(
+  demographic = list(
+    name = "Demographics",
+    icon = "users",
+    params = c(
+      "Age" = "age_years",
+      "Sex" = "sex",
+      "Education" = "education_level",
+      "Occupation" = "occupation_category"
+    )
+  ),
+  clinical = list(
+    name = "Clinical Parameters",
+    icon = "heartbeat",
+    params = c(
+      "BMI" = "bmi",
+      "Systolic BP" = "systolic_bp_mmhg",
+      "Diastolic BP" = "diastolic_bp_mmhg",
+      "Pulse Rate" = "pulse_rate_bpm",
+      "Oxygen Saturation" = "oxygen_saturation_percent"
+    )
+  ),
+  cognitive = list(
+    name = "Cognitive Assessment",
+    icon = "brain",
+    params = c(
+      "MMSE Total" = "mmse_total_score",
+      "Orientation Time" = "orientation_time_score",
+      "Orientation Place" = "orientation_place_score",
+      "Registration" = "registration_score",
+      "Recall" = "recall_score"
+    )
+  ),
+  physical = list(
+    name = "Physical Assessment",
+    icon = "dumbbell",
+    params = c(
+      "Frailty Score" = "frailty_total_score",
+      "Fatigue" = "fatigue_score",
+      "Resistance" = "resistance_score",
+      "Ambulation" = "ambulation_score"
+    )
+  ),
+  lifestyle = list(
+    name = "Lifestyle",
+    icon = "walking",
+    params = c(
+      "Exercise Frequency" = "exercise_frequency",
+      "Daily Steps" = "average_daily_steps",
+      "Work Activity" = "work_activity_level"
+    )
+  )
+)
+
+# Color Schemes
+COLOR_SCHEMES <- list(
+  zissou = list(
+    name = "Zissou",
+    colors = wes_palette("Zissou1"),
+    description = "Inspired by The Life Aquatic"
+  ),
+  darjeeling = list(
+    name = "Darjeeling",
+    colors = wes_palette("Darjeeling1"),
+    description = "Inspired by The Darjeeling Limited"
+  ),
+  royal = list(
+    name = "Royal",
+    colors = wes_palette("Royal1"),
+    description = "Inspired by The Royal Tenenbaums"
+  )
+)
+
+AGE_GROUPS <- c("18-29", "30-44", "45-59", "60-74", "75+")
+
+# Statistical Analysis Options
+STATS_CONFIG <- list(
+  descriptive = c("mean", "sd", "median", "iqr", "range"),
+  inferential = c("t.test", "wilcox.test", "anova", "kruskal.test"),
+  correlation = c("pearson", "spearman"),
+  effect_size = c("cohen.d", "r.squared")
+)
+
+# Plot Types
+PLOT_TYPES <- list(
+  distribution = c(
+    "Box Plot" = "box",
+    "Violin Plot" = "violin",
+    "Density Plot" = "density",
+    "Histogram" = "histogram"
+  ),
+  comparison = c(
+    "Bar Plot" = "bar",
+    "Dot Plot" = "dot",
+    "Line Plot" = "line"
+  ),
+  correlation = c(
+    "Scatter Plot" = "scatter",
+    "Correlation Matrix" = "cormat",
+    "Heat Map" = "heatmap"
+  )
+)

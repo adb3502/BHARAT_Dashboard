@@ -1,0 +1,40 @@
+﻿Participant_ID	had_covid19	required_hospitalization	covid19_severity	required_icu_admission	hospitalization_duration	rehabilitation_details
+1A-001						
+1A-002	Yes	No				
+1A-004	No					
+1A-005	Yes	No				
+1A-006						
+1A-007	Yes	No				
+1A-008	Yes	No				
+1A-009	Yes	No				
+1A-010	No					
+1B-001	Yes	No				
+1B-002	Yes	No				
+1B-003						
+1B-004 	Yes	No				
+1B-005	No					
+1B-006	No					
+1B-007	Yes	No				
+1B-008	No					
+1B-009	No					
+1B-010	Yes	No				
+2A-008	No					
+2A-009	No					
+3B-001	No					
+3B-002	Yes	No				
+4A-001	No					
+4A-002	Yes	No				
+4A-003	Yes	No				
+4A-004	No					
+4A-005	No					
+4B-001	No					
+4B-002	Yes	No				
+4B-003	Yes	No				
+4B-004	Yes	No				
+4B-005	Yes	No				
+4B-006	Yes	Yes	Moderate	No	1 week	
+4B-007	Yes	No				
+5A-001	Yes	No				
+5B-001	No					
+5B-002	No					
+5B-004	Yes	No				
