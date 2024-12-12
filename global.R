@@ -213,7 +213,7 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
   group_col <- data[[grouping_var]]
   
   # Check if we have exactly two groups
-  unique_groups <- unique(group_col)
+  unique_groups <- sort(unique(group_col))  # Sort to ensure consistent ordering
   if(length(unique_groups) != 2) {
     warning("Volcano plot requires exactly two groups for comparison")
     return(NULL)
@@ -222,22 +222,30 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
   # For each parameter
   for(param in parameters) {
     tryCatch({
-      # Perform t-test
-      t_result <- t.test(data[[param]] ~ group_col)
-      
-      # Calculate Cohen's d effect size
+      # Get data for each group
       group1_data <- data[[param]][group_col == unique_groups[1]]
       group2_data <- data[[param]][group_col == unique_groups[2]]
       
-      # Pooled standard deviation
+      # Remove NA values
+      group1_data <- group1_data[!is.na(group1_data)]
+      group2_data <- group2_data[!is.na(group2_data)]
+      
+      # Calculate means and SDs
       n1 <- length(group1_data)
       n2 <- length(group2_data)
+      m1 <- mean(group1_data)
+      m2 <- mean(group2_data)
       s1 <- sd(group1_data)
       s2 <- sd(group2_data)
+      
+      # Pooled standard deviation
       pooled_sd <- sqrt(((n1-1)*s1^2 + (n2-1)*s2^2)/(n1+n2-2))
       
       # Effect size (Cohen's d)
-      effect_size <- (mean(group2_data) - mean(group1_data))/pooled_sd
+      effect_size <- (m2 - m1)/pooled_sd
+      
+      # Welch's t-test (doesn't assume equal variances)
+      t_result <- t.test(group2_data, group1_data, var.equal = FALSE)
       
       # Add to results
       results <- rbind(results, data.frame(
@@ -247,17 +255,22 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
         p_value = t_result$p.value,
         stringsAsFactors = FALSE
       ))
+      
     }, error = function(e) {
       warning(paste("Error processing parameter:", param, "-", e$message))
     })
   }
   
   # Add FDR-adjusted p-values and significance
-  results <- results %>%
-    mutate(
-      fdr_p_value = p.adjust(p_value, method = "fdr"),
-      significant = fdr_p_value < 0.05
-    )
+  if(nrow(results) > 0) {
+    results <- results %>%
+      mutate(
+        fdr_p_value = p.adjust(p_value, method = "fdr"),
+        significant = fdr_p_value < 0.05,
+        # Add log fold change for additional context
+        log_p = -log10(p_value)
+      )
+  }
   
   return(results)
 }
@@ -404,15 +417,6 @@ generate_mapping_template <- function() {
   return(template)
 }
 
-# Modify the prepare_plot_data function
-prepare_plot_data <- function(data, selected_datasets, selected_age_groups) {
-  filtered_data <- data %>%
-    filter(
-      dataset %in% selected_datasets,
-      age_group %in% selected_age_groups
-    )
-  return(filtered_data)
-}
 
 # Make sure age group selection is properly defined
 selectInput("age_groups", 

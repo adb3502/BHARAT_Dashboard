@@ -1,6 +1,6 @@
+# Section 1: Core State Management and Setup -------------------------
 function(input, output, session) {
-  
-  # Reactive values for state management
+  # Initialize reactive values for state management
   integration_state <- reactiveValues(
     external_data = NULL,
     mapping = NULL,
@@ -11,12 +11,75 @@ function(input, output, session) {
   # Reactive value for custom groups
   custom_groups <- reactiveVal(list())
   
-  # Initialize reactive value for integrated datasets at the top level
+  # Initialize reactive value for integrated datasets
   integrated_datasets_rv <- reactiveVal(list(
     "BHARAT" = blood_data_with_demo
   ))
+  
+  # Helper function to get the right grouping
+  get_group_var <- reactive({
+    switch(input$grouping,
+           "age" = "age_group",
+           "sex" = "sex",
+           "combined" = "group_combined",
+           "custom" = "custom_group")
+  })
+  
+  # Core data preparation function
+  prepare_plot_data <- reactive({
+    req(input$selected_datasets, input$selected_age_groups)
+    
+    # Get current datasets
+    datasets <- integrated_datasets_rv()
+    
+    # Debug print
+    message("Preparing plot data")
+    message("Selected datasets: ", paste(input$selected_datasets, collapse=", "))
+    
+    # Safely combine datasets
+    plot_data <- tryCatch({
+      combined_data <- bind_rows(!!!lapply(input$selected_datasets, function(ds) {
+        if (ds %in% names(datasets)) {
+          data <- datasets[[ds]]
+          message(paste("Processing dataset:", ds))
+          message(paste("Dimensions:", nrow(data), "x", ncol(data)))
+          data
+        } else {
+          message(paste("Dataset not found:", ds))
+          NULL
+        }
+      }))
+      
+      if(is.null(combined_data) || nrow(combined_data) == 0) {
+        return(NULL)
+      }
+      
+      # Filter and prepare data
+      filtered_data <- combined_data %>%
+        filter(.data$age_group %in% input$selected_age_groups)
+      
+      # Apply custom grouping if selected
+      if(input$grouping == "custom" && length(custom_groups()) > 0) {
+        filtered_data <- apply_custom_group(filtered_data, custom_groups())
+      }
+      
+      filtered_data
+      
+    }, error = function(e) {
+      message("Error in prepare_plot_data: ", e$message)
+      NULL
+    })
+    
+    # Debug print final dimensions
+    if(!is.null(plot_data)) {
+      message(paste("Final data dimensions:", nrow(plot_data), "x", ncol(plot_data)))
+    }
+    
+    return(plot_data)
+  })
 
-  # Update observers to use the reactive value
+  # Section 2: UI Observers and Event Handlers -------------------------
+  # Update dataset selection inputs
   observe({
     datasets <- integrated_datasets_rv()
     choices <- setNames(
@@ -50,25 +113,6 @@ function(input, output, session) {
     updateSelectInput(session, "group_ranges", selected = character(0))
   })
   
-  # Display current custom groups
-  output$current_groups <- renderDT({
-    groups_df <- data.frame(
-      Group = names(custom_groups()),
-      Ranges = sapply(custom_groups(), paste, collapse = ", ")
-    )
-    
-    datatable(
-      groups_df,
-      options = list(
-        dom = 't',
-        pageLength = -1,
-        ordering = FALSE
-      ),
-      selection = 'single'
-    )
-  })
-  
-  # Remove selected custom group
   observeEvent(input$remove_selected_groups, {
     req(input$current_groups_rows_selected)
     
@@ -77,66 +121,15 @@ function(input, output, session) {
     current_groups[[group_to_remove]] <- NULL
     custom_groups(current_groups)
   })
-  
-  # Helper function to get the right grouping
-  get_group_var <- reactive({
-    switch(input$grouping,
-           "age" = "age_group",
-           "sex" = "sex",
-           "combined" = "group_combined",
-           "custom" = "custom_group")
-  })
-  
-  # Function to filter and prepare data based on selections
-prepare_plot_data <- reactive({
-  req(input$selected_datasets, input$selected_age_groups)
-  
-  # Print debug info
-  print("Selected datasets:")
-  print(input$selected_datasets)
-  print("Selected age groups:")
-  print(input$selected_age_groups)
-  
-  # Get current datasets
-  datasets <- integrated_datasets_rv()
-  
-  # Combine selected datasets
-  combined_data <- bind_rows(!!!lapply(input$selected_datasets, function(ds) {
-    if (ds %in% names(datasets)) {
-      data <- datasets[[ds]]
-      print(paste("Columns in", ds, ":"))
-      print(names(data))
-      return(data)
-    } else {
-      print(paste("Dataset not found:", ds))
-      return(NULL)
-    }
-  }))
-  
-  # Add debug print
-  print("Combined data dimensions:")
-  print(dim(combined_data))
-  print("Combined data columns:")
-  print(names(combined_data))
-  
-  # Filter by selected age groups
-  filtered_data <- combined_data %>%
-    filter(.data$age_group %in% input$selected_age_groups)
-  
-  # Apply custom grouping if selected
-  if(input$grouping == "custom" && length(custom_groups()) > 0) {
-    filtered_data <- apply_custom_group(filtered_data, custom_groups())
-  }
-  
-  return(filtered_data)
-})
 
+# Section 3: Plot Outputs -------------------------
   # Blood parameter visualization
   output$blood_dist <- renderPlotly({
     req(input$blood_param)
     
     # Get plot data
     plot_df <- prepare_plot_data()
+    req(plot_df)
     
     # Get current variable and grouping
     current_var <- input$blood_param
@@ -313,405 +306,14 @@ prepare_plot_data <- reactive({
       config(displayModeBar = TRUE)
   })
   
-  # Statistical tests and summaries
-  output$blood_stats <- renderText({
-    req(input$blood_param, input$show_stats)
-    
-    # Get current variable and plotting data
-    current_var <- input$blood_param
-    plot_df <- prepare_plot_data()
-    group_var <- get_group_var()
-    
-    # Create stats data
-    stats_df <- plot_df %>%
-      mutate(
-        group = !!sym(group_var),
-        value = !!sym(current_var)
-      ) %>%
-      drop_na()
-    
-    # Calculate descriptive stats
-    desc_stats <- stats_df %>%
-      group_by(group) %>%
-      summarise(
-        n = n(),
-        mean = round(mean(value, na.rm = TRUE), 2),
-        sd = round(sd(value, na.rm = TRUE), 2),
-        median = round(median(value, na.rm = TRUE), 2),
-        q1 = round(quantile(value, 0.25, na.rm = TRUE), 2),
-        q3 = round(quantile(value, 0.75, na.rm = TRUE), 2)
-      )
-    
-    # Format descriptive stats
-    desc_text <- desc_stats %>%
-      mutate(stats = sprintf(
-        "%s (n=%d):\nMean ± SD: %0.2f ± %0.2f\nMedian [Q1, Q3]: %0.2f [%0.2f, %0.2f]",
-        group, n, mean, sd, median, q1, q3
-      )) %>%
-      pull(stats) %>%
-      paste(collapse = "\n\n")
-    
-    # Add inferential stats if applicable
-    if(n_distinct(stats_df$group) == 2) {
-      tryCatch({
-        # T-test
-        t_res <- t.test(value ~ group, data = stats_df)
-        
-        # Mann-Whitney test
-        w_res <- wilcox.test(value ~ group, data = stats_df)
-        
-        # Effect size
-        eff_size <- cohens_d(stats_df, value ~ group)$effsize
-        
-        paste("Descriptive Statistics:\n\n",
-              desc_text,
-              "\n\nInferential Statistics:\n",
-              "\nParametric (t-test):",
-              "\nt-statistic = ", round(t_res$statistic, 2),
-              "\np-value = ", format.pval(t_res$p.value, digits = 3),
-              "\n\nNon-parametric (Mann-Whitney):",
-              "\nW-statistic = ", round(w_res$statistic, 2),
-              "\np-value = ", format.pval(w_res$p.value, digits = 3),
-              "\n\nEffect Size (Cohen's d) = ", round(eff_size, 2))
-      }, error = function(e) {
-        paste("Descriptive Statistics:\n\n",
-              desc_text,
-              "\n\nNote: Could not perform inferential statistics.",
-              "\nError details: ", as.character(e))
-      })
-    } else if(n_distinct(stats_df$group) > 2) {
-      tryCatch({
-        # ANOVA
-        aov_res <- aov(value ~ group, data = stats_df)
-        aov_sum <- summary(aov_res)[[1]]
-        
-        # Kruskal-Wallis test
-        kw_res <- kruskal.test(value ~ group, data = stats_df)
-        
-        # Effect size (eta-squared)
-        eta_sq <- summary.lm(aov_res)$r.squared
-        
-        paste("Descriptive Statistics:\n\n",
-              desc_text,
-              "\n\nInferential Statistics:\n",
-              "\nOne-way ANOVA:",
-              "\nF-statistic = ", round(aov_sum$`F value`[1], 2),
-              "\np-value = ", format.pval(aov_sum$`Pr(>F)`[1], digits = 3),
-              "\n\nKruskal-Wallis test:",
-              "\nChi-squared = ", round(kw_res$statistic, 2),
-              "\np-value = ", format.pval(kw_res$p.value, digits = 3),
-              "\n\nEffect Size (Eta-squared) = ", round(eta_sq, 2))
-      }, error = function(e) {
-        paste("Descriptive Statistics:\n\n",
-              desc_text,
-              "\n\nNote: Could not perform inferential statistics.",
-              "\nError details: ", as.character(e))
-      })
-    } else {
-      paste("Descriptive Statistics:\n\n", desc_text)
-    }
-  })
-
-# Integration workflow handlers
-  observeEvent(input$preview_data, {
-    req(input$external_data, input$dataset_name)
-    
-    tryCatch({
-      # Read and store data
-      data <- read_csv(input$external_data$datapath, show_col_types = FALSE)
-      integration_state$external_data <- data
-      
-      # Get column info
-      col_info <- lapply(names(data), function(col) {
-        list(
-          type = class(data[[col]])[1],
-          sample = paste(head(data[[col]], 3), collapse = ", ")
-        )
-      })
-      names(col_info) <- names(data)
-      
-      # Update data info UI
-      output$data_info <- renderUI({
-        div(
-          h4("Dataset Information:"),
-          p(paste("Number of rows:", nrow(data))),
-          p(paste("Number of columns:", ncol(data))),
-          h4("Column Types:"),
-          tags$ul(
-            lapply(names(col_info), function(col) {
-              tags$li(
-                strong(col), ": ",
-                paste("Type:", col_info[[col]]$type),
-                tags$br(),
-                "Sample values: ", col_info[[col]]$sample
-              )
-            })
-          )
-        )
-      })
-      
-      # Show data preview
-      output$data_preview <- renderDT({
-        datatable(
-          head(data, 100),
-          options = list(
-            scrollX = TRUE,
-            pageLength = 5
-          )
-        )
-      })
-      
-    }, error = function(e) {
-      showNotification(
-        paste("Error reading data:", e$message),
-        type = "error"
-      )
-    })
-  })
-
-  output$download_template <- downloadHandler(
-    filename = function() {
-      paste0("mapping_template_", tools::file_path_sans_ext(input$dataset_name), ".csv")
-    },
-    content = function(file) {
-      template <- generate_mapping_template()
-      write.csv(template, file, row.names = FALSE, na = "")
-    },
-    contentType = "text/csv"
-  )
-
-  # Process mapping file
-  observeEvent(input$mapping_file, {
-    req(input$mapping_file)
-    
-    tryCatch({
-      mapping <- read_csv(input$mapping_file$datapath, show_col_types = FALSE)
-      integration_state$mapping <- mapping
-      
-      output$mapping_preview <- renderDT({
-        datatable(
-          mapping,
-          options = list(
-            scrollX = TRUE,
-            pageLength = 10
-          )
-        )
-      })
-      
-      output$mapping_status <- renderUI({
-        div(
-          class = "alert alert-success",
-          icon("check-circle"),
-          "Mapping file loaded successfully"
-        )
-      })
-      
-    }, error = function(e) {
-      output$mapping_status <- renderUI({
-        div(
-          class = "alert alert-danger",
-          icon("exclamation-circle"),
-          paste("Error loading mapping file:", e$message)
-        )
-      })
-    })
-  })
-
-  # Validate integration
-  observeEvent(input$validate_integration, {
-    req(integration_state$external_data,
-        integration_state$mapping,
-        input$dataset_name)
-    
-    tryCatch({
-      processed_data <- process_external_data(
-        input$external_data$datapath,
-        integration_state$mapping,
-        input$dataset_name
-      )
-      
-      integration_state$processed_data <- processed_data
-      validation <- validate_dataset(processed_data)
-      integration_state$validation_result <- validation
-      
-      output$validation_status <- renderUI({
-        div(
-          class = if(validation$valid) "alert alert-success" else "alert alert-danger",
-          icon(if(validation$valid) "check-circle" else "exclamation-circle"),
-          validation$message
-        )
-      })
-      
-    }, error = function(e) {
-      output$validation_status <- renderUI({
-        div(
-          class = "alert alert-danger",
-          icon("exclamation-circle"),
-          paste("Error processing data:", e$message)
-        )
-      })
-    })
-  })
-
-  # ...existing code...
-
-  # Update age distribution plot to handle errors gracefully
-  output$age_distribution <- renderPlotly({
-    # Require input validation
-    req(input$demo_datasets)
-    req(input$demo_age_groups)
-    
-    # Get current datasets from the reactive value
-    datasets <- integrated_datasets_rv()
-    
-    # Safely combine selected datasets
-    plot_data <- tryCatch({
-      combined_data <- bind_rows(!!!lapply(input$demo_datasets, function(ds) {
-        if (ds %in% names(datasets)) {
-          datasets[[ds]]
-        } else {
-          NULL
-        }
-      }))
-      
-      # Filter by selected age groups
-      combined_data %>%
-        filter(age_group %in% input$demo_age_groups)
-    }, error = function(e) {
-      # Log error and return NULL
-      warning("Error in age distribution plot: ", e$message)
-      NULL
-    })
-    
-    # Check if we have valid data
-    req(plot_data)
-    req(nrow(plot_data) > 0)
-    
-    # Create plot
-    p <- ggplot(plot_data, aes(x = age, fill = sex)) +
-      geom_histogram(binwidth = 1, position = "stack", alpha = 0.7) +
-      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
-      theme_minimal() +
-      labs(
-        title = "Age Distribution by Gender",
-        x = "Age (years)",
-        y = "Count",
-        fill = "Gender"
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5, face = "bold")
-      )
-    
-    ggplotly(p)
-  })
-
-  # ...existing code...
-
-  # Integrate data
-  # Update this in server.R
-
-  # Add a reactiveVal to store integrated datasets
-  integrated_datasets_rv <- reactiveVal(list(
-    "BHARAT" = blood_data_with_demo
-  ))
-
-  observeEvent(input$integrate_data, {
-    req(integration_state$processed_data,
-        integration_state$validation_result$valid,
-        input$dataset_name)
-    
-    withProgress(message = 'Integrating dataset...', value = 0, {
-      
-      tryCatch({
-        # Print initial state
-        print("Current integrated datasets:")
-        print(names(integrated_datasets_rv()))
-        
-        # Store data
-        new_dataset <- integration_state$processed_data
-        print("New dataset dimensions:")
-        print(dim(new_dataset))
-        
-        # Update integrated datasets
-        current_datasets <- integrated_datasets_rv()
-        current_datasets[[input$dataset_name]] <- new_dataset
-        integrated_datasets_rv(current_datasets)
-        
-        print("Updated integrated datasets:")
-        print(names(integrated_datasets_rv()))
-        
-        # Update UI selections
-        choices <- setNames(
-          names(integrated_datasets_rv()),
-          paste(names(integrated_datasets_rv()), "Data")
-        )
-        print("Updating choices:")
-        print(choices)
-        
-        updateCheckboxGroupInput(session, "selected_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        updateCheckboxGroupInput(session, "demo_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        updateCheckboxGroupInput(session, "stats_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        showNotification(
-          paste("Successfully integrated dataset:", input$dataset_name),
-          type = "message",
-          duration = 5
-        )
-        
-      }, error = function(e) {
-        print("Integration error:")
-        print(e$message)
-        showNotification(
-          paste("Error during integration:", e$message),
-          type = "error",
-          duration = NULL
-        )
-      })
-    })
-  })
-
-  # Update the dataset table using the reactive value
-  output$integrated_datasets_table <- renderDT({
-    datasets <- integrated_datasets_rv()
-    req(length(datasets) > 0)
-    
-    map_df(names(datasets), ~{
-      data <- datasets[[.x]]
-      tibble(
-        Dataset = .x,
-        Rows = nrow(data),
-        Columns = ncol(data),
-        "Sample Size" = length(unique(data$participant_id)),
-        "Age Range" = sprintf("%d-%d", min(data$age), max(data$age)),
-        "Integration Date" = as.character(Sys.Date())
-      )
-    }) %>%
-      datatable(options = list(
-        pageLength = 5,
-        searching = FALSE,
-        lengthChange = FALSE
-      ))
-  })
-
-  # ...existing code...
-
-  # Update age distribution plot to use the reactive value
+  # Age distribution plot
   output$age_distribution <- renderPlotly({
     req(input$demo_datasets, input$demo_age_groups)
     
     # Get current datasets
     datasets <- integrated_datasets_rv()
     
-    # Print debug info properly
+    # Print debug info
     message("Creating age distribution plot")
     message("Selected datasets: ", paste(input$demo_datasets, collapse = ", "))
     
@@ -735,9 +337,9 @@ prepare_plot_data <- reactive({
       
       # Filter by selected age groups
       combined_data %>%
-        filter(age_group %in% input$demo_age_groups)
+        filter(.data$age_group %in% input$demo_age_groups)
     }, error = function(e) {
-      message("Error in data processing: ", e$message)
+      message("Error in age distribution plot: ", e$message)
       NULL
     })
     
@@ -765,211 +367,390 @@ prepare_plot_data <- reactive({
     
     ggplotly(p)
   })
-  # Age groups distribution
-output$age_groups_dist <- renderPlotly({
-  # Require necessary inputs
-  req(length(input$demo_datasets) > 0, length(input$demo_age_groups) > 0)
+
+  # Section 4: Integration Workflow -------------------------
+  # Data preview handler
+  observeEvent(input$preview_data, {
+    req(input$external_data, input$dataset_name)
     
-  # Get current datasets from reactive value
-  datasets <- integrated_datasets_rv()
-    
-  # Debug messages
-  message("Creating age groups distribution plot")
-  message("Selected datasets: ", paste(input$demo_datasets, collapse = ", "))
-    
-  # Safely combine and process data
-  plot_data <- tryCatch({
-    combined_data <- bind_rows(!!!lapply(input$demo_datasets, function(ds) {
-      message(paste("Processing dataset:", ds))
-      if (ds %in% names(datasets)) {
-        data <- datasets[[ds]]
-        message(paste("Dimensions:", nrow(data), "x", ncol(data)))
-        data
-      } else {
-        message(paste("Dataset not found:", ds))
-        NULL
-      }
-    }))
+    tryCatch({
+      # Read and store data with proper error handling
+      data <- read_csv(input$external_data$datapath, show_col_types = FALSE)
+      integration_state$external_data <- data
       
-    if (is.null(combined_data) || nrow(combined_data) == 0) {
-      return(NULL)
-    }
+      # Generate column info
+      col_info <- lapply(names(data), function(col) {
+        list(
+          type = class(data[[col]])[1],
+          sample = paste(head(data[[col]], 3), collapse = ", ")
+        )
+      })
+      names(col_info) <- names(data)
       
-    # Filter and prepare data
-    combined_data %>%
-      filter(.data$age_group %in% input$demo_age_groups) %>%
-      mutate(age_group = factor(age_group, 
-                             levels = c("18-29", "30-44", "45-59", "60-74", "75+")))
+      # Update info UI
+      output$data_info <- renderUI({
+        div(
+          h4("Dataset Information:"),
+          p(paste("Number of rows:", nrow(data))),
+          p(paste("Number of columns:", ncol(data))),
+          h4("Column Types:"),
+          tags$ul(
+            lapply(names(col_info), function(col) {
+              tags$li(
+                strong(col), ": ",
+                paste("Type:", col_info[[col]]$type),
+                tags$br(),
+                "Sample values: ", col_info[[col]]$sample
+              )
+            })
+          )
+        )
+      })
+      
+      # Show preview
+      output$data_preview <- renderDT({
+        datatable(
+          head(data, 100),
+          options = list(
+            scrollX = TRUE,
+            pageLength = 5
+          )
+        )
+      })
+    }, error = function(e) {
+      showNotification(
+        paste("Error reading data:", e$message),
+        type = "error",
+        duration = NULL
+      )
+    })
+  })
+
+  # Mapping file handler
+  observeEvent(input$mapping_file, {
+    req(input$mapping_file)
+    
+    tryCatch({
+      mapping <- read_csv(input$mapping_file$datapath, show_col_types = FALSE)
+      integration_state$mapping <- mapping
+      
+      output$mapping_preview <- renderDT({
+        datatable(mapping, options = list(scrollX = TRUE, pageLength = 10))
+      })
+      
+      output$mapping_status <- renderUI({
+        div(class = "alert alert-success",
+            icon("check-circle"),
+            "Mapping file loaded successfully")
+      })
+    }, error = function(e) {
+      output$mapping_status <- renderUI({
+        div(class = "alert alert-danger",
+            icon("exclamation-circle"),
+            paste("Error loading mapping file:", e$message))
+      })
+    })
+  })
+
+  # Validation handler
+  observeEvent(input$validate_integration, {
+    req(integration_state$external_data,
+        integration_state$mapping,
+        input$dataset_name)
+    
+    tryCatch({
+      processed_data <- process_external_data(
+        input$external_data$datapath,
+        integration_state$mapping,
+        input$dataset_name
+      )
+      
+      integration_state$processed_data <- processed_data
+      validation <- validate_dataset(processed_data)
+      integration_state$validation_result <- validation
+      
+      output$validation_status <- renderUI({
+        div(
+          class = if(validation$valid) "alert alert-success" else "alert alert-danger",
+          icon(if(validation$valid) "check-circle" else "exclamation-circle"),
+          validation$message
+        )
+      })
+    }, error = function(e) {
+      output$validation_status <- renderUI({
+        div(
+          class = "alert alert-danger",
+          icon("exclamation-circle"),
+          paste("Error processing data:", e$message)
+        )
+      })
+    })
+  })
+
+  # Integration handler
+  observeEvent(input$integrate_data, {
+    req(integration_state$processed_data,
+        integration_state$validation_result$valid,
+        input$dataset_name)
+    
+    withProgress(message = 'Integrating dataset...', value = 0, {
+      tryCatch({
+        message("Current integrated datasets:")
+        message(paste(names(integrated_datasets_rv()), collapse = ", "))
         
-  }, error = function(e) {
-    message("Error in data processing: ", e$message)
-    NULL
+        # Update datasets
+        current_datasets <- integrated_datasets_rv()
+        current_datasets[[input$dataset_name]] <- integration_state$processed_data
+        integrated_datasets_rv(current_datasets)
+        
+        # Update UI
+        choices <- setNames(
+          names(current_datasets),
+          paste(names(current_datasets), "Data")
+        )
+        
+        updateCheckboxGroupInput(session, "selected_datasets", 
+                               choices = choices,
+                               selected = c("BHARAT", input$dataset_name))
+        
+        updateCheckboxGroupInput(session, "demo_datasets", 
+                               choices = choices,
+                               selected = c("BHARAT", input$dataset_name))
+        
+        updateCheckboxGroupInput(session, "stats_datasets", 
+                               choices = choices,
+                               selected = c("BHARAT", input$dataset_name))
+        
+        showNotification(
+          paste("Successfully integrated dataset:", input$dataset_name),
+          type = "message",
+          duration = 5
+        )
+      }, error = function(e) {
+        message("Integration error:", e$message)
+        showNotification(
+          paste("Error during integration:", e$message),
+          type = "error",
+          duration = NULL
+        )
+      })
+    })
   })
-    
-  # Check if we have valid data
-  req(plot_data)
-  req(nrow(plot_data) > 0)
-    
-  message("Final plot data dimensions: ", nrow(plot_data), "x", ncol(plot_data))
-    
-  # Create plot
-  p <- ggplot(plot_data, aes(x = age_group, fill = sex)) +
-    geom_bar(position = "dodge", alpha = 0.7) +
-    scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
-    theme_minimal() +
-    labs(
-      title = "Distribution by Age Group and Gender",
-      x = "Age Group",
-      y = "Count",
-      fill = "Gender"
-    ) +
-    theme(
-      text = element_text(family = "Manrope"),
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      axis.text.x = element_text(angle = 45, hjust = 1)
-    )
-    
-  ggplotly(p)
-})
 
-  # Volcano plot and stats table
-output$volcano_plot <- renderPlotly({
-  req(length(input$stats_datasets) > 0,
-      length(input$stats_age_groups) > 0,
-      input$stats_grouping)
-  
-  # Get current datasets
-  datasets <- integrated_datasets_rv()
-  
-  # Prepare data with proper error handling
-  plot_data <- tryCatch({
-    combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
-      if (ds %in% names(datasets)) {
-        datasets[[ds]]
-      } else {
-        NULL
+# Section 5: Additional Plot & Table Outputs -------------------------
+  # Age groups distribution
+  output$age_groups_dist <- renderPlotly({
+    req(length(input$demo_datasets) > 0, length(input$demo_age_groups) > 0)
+    
+    # Get current datasets
+    datasets <- integrated_datasets_rv()
+    
+    plot_data <- tryCatch({
+      combined_data <- bind_rows(!!!lapply(input$demo_datasets, function(ds) {
+        if (ds %in% names(datasets)) {
+          datasets[[ds]]
+        } else {
+          NULL
+        }
+      })) %>%
+        filter(.data$age_group %in% input$demo_age_groups) %>%
+        mutate(age_group = factor(age_group, 
+                                 levels = c("18-29", "30-44", "45-59", "60-74", "75+")))
+      
+      if (is.null(combined_data) || nrow(combined_data) == 0) {
+        return(NULL)
       }
-    }))
+      
+      combined_data
+    }, error = function(e) {
+      message("Error in age groups distribution: ", e$message)
+      NULL
+    })
     
-    # Filter by age groups
-    filtered_data <- combined_data %>%
-      filter(.data$age_group %in% input$stats_age_groups)
+    req(plot_data)
     
-    if(input$stats_grouping == "custom") {
-      filtered_data <- apply_custom_group(filtered_data, custom_groups())
-    }
+    p <- ggplot(plot_data, aes(x = age_group, fill = sex)) +
+      geom_bar(position = "dodge", alpha = 0.7) +
+      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
+      theme_minimal() +
+      labs(
+        title = "Distribution by Age Group and Gender",
+        x = "Age Group",
+        y = "Count",
+        fill = "Gender"
+      ) +
+      theme(
+        text = element_text(family = "Manrope"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
     
-    filtered_data
-    
-  }, error = function(e) {
-    message("Error in volcano plot data preparation: ", e$message)
-    NULL
+    ggplotly(p)
   })
-  
-  req(plot_data)
-  
-  # Get parameters excluding metadata columns
-  params <- names(plot_data)[!names(plot_data) %in% 
-    c("participant_id", "month", "age", "sex", "age_group", 
-      "dataset", "group_combined", "custom_group")]
-  
-  # Calculate volcano plot data
-  volcano_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
-  
-  # Create volcano plot with symmetrical layout
-  p <- ggplot(volcano_data, 
-              aes(x = effect_size, 
-                  y = -log10(p_value),
-                  color = significant,
-                  text = paste("Parameter:", parameter_label,
-                             "\nEffect Size:", round(effect_size, 3),
-                             "\np-value:", format.pval(p_value, digits = 3)))) +
-    geom_point(size = 3) +
-    geom_hline(yintercept = -log10(0.05), 
-               linetype = "dashed", 
-               color = "grey50", 
-               alpha = 0.5) +
-    scale_color_manual(values = c("TRUE" = "#FF9642", "FALSE" = "#87CEEB")) +
-    # Add these lines for symmetric x-axis
-    scale_x_continuous(limits = function(x) {
-      max_abs <- max(abs(x))
-      c(-max_abs, max_abs)
-    }) +
-    theme_minimal() +
-    labs(
-      title = paste("Volcano Plot by", str_to_title(input$stats_grouping)),
-      x = "Effect Size",
-      y = "-log10(p-value)",
-      color = "Significant"
-    ) +
-    theme(
-      text = element_text(family = "Manrope"),
-      plot.title = element_text(hjust = 0.5)
-    )
-  
-  ggplotly(p, tooltip = "text")
-})
 
-# Update stats table
-output$stats_table <- renderDT({
-  req(length(input$stats_datasets) > 0,
-      length(input$stats_age_groups) > 0,
-      input$stats_grouping)
-  
-  # Get current datasets
-  datasets <- integrated_datasets_rv()
-  
-  # Prepare data with proper error handling
-  plot_data <- tryCatch({
-    combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
-      if (ds %in% names(datasets)) {
-        datasets[[ds]]
-      } else {
-        NULL
+  # Volcano plot
+  output$volcano_plot <- renderPlotly({
+    req(length(input$stats_datasets) > 0,
+        length(input$stats_age_groups) > 0,
+        input$stats_grouping)
+    
+    # Get current datasets
+    datasets <- integrated_datasets_rv()
+    
+    # Prepare data with proper error handling
+    plot_data <- tryCatch({
+      combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
+        if (ds %in% names(datasets)) {
+          datasets[[ds]]
+        } else {
+          NULL
+        }
+      }))
+      
+      if(is.null(combined_data) || nrow(combined_data) == 0) {
+        return(NULL)
       }
-    }))
+      
+      filtered_data <- combined_data %>%
+        filter(.data$age_group %in% input$stats_age_groups)
+      
+      if(input$stats_grouping == "custom") {
+        filtered_data <- apply_custom_group(filtered_data, custom_groups())
+      }
+      
+      filtered_data
+    }, error = function(e) {
+      message("Error in volcano plot data preparation: ", e$message)
+      NULL
+    })
     
-    # Filter and process
-    filtered_data <- combined_data %>%
-      filter(.data$age_group %in% input$stats_age_groups)
+    req(plot_data)
     
-    if(input$stats_grouping == "custom") {
-      filtered_data <- apply_custom_group(filtered_data, custom_groups())
-    }
+    # Get parameters for analysis
+    params <- names(plot_data)[!names(plot_data) %in% 
+      c("participant_id", "month", "age", "sex", "age_group", 
+        "dataset", "group_combined", "custom_group")]
     
-    filtered_data
+    # Calculate volcano plot data
+    volcano_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
+    req(volcano_data)
     
-  }, error = function(e) {
-    message("Error in stats table data preparation: ", e$message)
-    NULL
+    # Create volcano plot with symmetrical layout
+    p <- ggplot(volcano_data, 
+                aes(x = effect_size, 
+                    y = -log10(p_value),
+                    color = significant,
+                    text = paste("Parameter:", parameter_label,
+                               "\nEffect Size:", round(effect_size, 3),
+                               "\np-value:", format.pval(p_value, digits = 3)))) +
+      geom_point(size = 3) +
+      geom_hline(yintercept = -log10(0.05), 
+                 linetype = "dashed", 
+                 color = "grey50", 
+                 alpha = 0.5) +
+      scale_color_manual(values = c("TRUE" = "#FF9642", "FALSE" = "#87CEEB")) +
+      # Add symmetric x-axis
+      scale_x_continuous(limits = function(x) {
+        max_abs <- max(abs(x))
+        c(-max_abs, max_abs)
+      }) +
+      theme_minimal() +
+      labs(
+        title = paste("Volcano Plot by", str_to_title(input$stats_grouping)),
+        x = "Effect Size",
+        y = "-log10(p-value)",
+        color = "Significant"
+      ) +
+      theme(
+        text = element_text(family = "Manrope"),
+        plot.title = element_text(hjust = 0.5)
+      )
+    
+    ggplotly(p, tooltip = "text")
   })
-  
-  req(plot_data)
-  
-  # Get parameters
-  params <- names(plot_data)[!names(plot_data) %in% 
-    c("participant_id", "month", "age", "sex", "age_group", 
-      "dataset", "group_combined", "custom_group")]
-  
-  # Calculate statistics
-  stats_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
-  
-  # Format for display
-  stats_data %>%
-    mutate(
-      p_value = format.pval(p_value, digits = 3),
-      effect_size = round(effect_size, 3),
-      fdr_p_value = format.pval(fdr_p_value, digits = 3)
-    ) %>%
-    datatable(
-      options = list(
-        pageLength = 15,
-        scrollX = TRUE
-      ),
-      rownames = FALSE
-    ) %>%
-    formatStyle(
-      'significant',
-      backgroundColor = styleEqual(c(TRUE, FALSE), c('#90EE90', '#FFB6C6'))
-    )
-})
+
+  # Stats table
+  output$stats_table <- renderDT({
+    req(length(input$stats_datasets) > 0,
+        length(input$stats_age_groups) > 0,
+        input$stats_grouping)
+    
+    # Get current datasets
+    datasets <- integrated_datasets_rv()
+    
+    # Prepare data with proper error handling
+    plot_data <- tryCatch({
+      combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
+        if (ds %in% names(datasets)) {
+          datasets[[ds]]
+        } else {
+          NULL
+        }
+      }))
+      
+      filtered_data <- combined_data %>%
+        filter(.data$age_group %in% input$stats_age_groups)
+      
+      if(input$stats_grouping == "custom") {
+        filtered_data <- apply_custom_group(filtered_data, custom_groups())
+      }
+      
+      filtered_data
+    }, error = function(e) {
+      message("Error in stats table data preparation: ", e$message)
+      NULL
+    })
+    
+    req(plot_data)
+    
+    # Get parameters
+    params <- names(plot_data)[!names(plot_data) %in% 
+      c("participant_id", "month", "age", "sex", "age_group", 
+        "dataset", "group_combined", "custom_group")]
+    
+    # Calculate statistics
+    stats_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
+    
+    # Format for display
+    stats_data %>%
+      mutate(
+        p_value = format.pval(p_value, digits = 3),
+        effect_size = round(effect_size, 3),
+        fdr_p_value = format.pval(fdr_p_value, digits = 3)
+      ) %>%
+      datatable(
+        options = list(
+          pageLength = 15,
+          scrollX = TRUE
+        ),
+        rownames = FALSE
+      ) %>%
+      formatStyle(
+        'significant',
+        backgroundColor = styleEqual(c(TRUE, FALSE), c('#90EE90', '#FFB6C6'))
+      )
+  })
+
+  # Dataset information table
+  output$integrated_datasets_table <- renderDT({
+    datasets <- integrated_datasets_rv()
+    req(length(datasets) > 0)
+    
+    map_df(names(datasets), ~{
+      data <- datasets[[.x]]
+      tibble(
+        Dataset = .x,
+        Rows = nrow(data),
+        Columns = ncol(data),
+        "Sample Size" = length(unique(data$participant_id)),
+        "Age Range" = sprintf("%d-%d", min(data$age), max(data$age)),
+        "Integration Date" = as.character(Sys.Date())
+      )
+    }) %>%
+      datatable(options = list(
+        pageLength = 5,
+        searching = FALSE,
+        lengthChange = FALSE
+      ))
+  })
+}
