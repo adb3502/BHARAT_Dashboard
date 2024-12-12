@@ -88,7 +88,7 @@ function(input, output, session) {
   })
   
   # Function to filter and prepare data based on selections
-  prepare_plot_data <- reactive({
+prepare_plot_data <- reactive({
   req(input$selected_datasets, input$selected_age_groups)
   
   # Print debug info
@@ -97,13 +97,27 @@ function(input, output, session) {
   print("Selected age groups:")
   print(input$selected_age_groups)
   
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  
   # Combine selected datasets
   combined_data <- bind_rows(!!!lapply(input$selected_datasets, function(ds) {
-    data <- integrated_datasets[[ds]]
-    print(paste("Columns in", ds, ":"))
-    print(names(data))
-    return(data)
+    if (ds %in% names(datasets)) {
+      data <- datasets[[ds]]
+      print(paste("Columns in", ds, ":"))
+      print(names(data))
+      return(data)
+    } else {
+      print(paste("Dataset not found:", ds))
+      return(NULL)
+    }
   }))
+  
+  # Add debug print
+  print("Combined data dimensions:")
+  print(dim(combined_data))
+  print("Combined data columns:")
+  print(names(combined_data))
   
   # Filter by selected age groups
   filtered_data <- combined_data %>%
@@ -819,97 +833,143 @@ output$age_groups_dist <- renderPlotly({
 })
 
   # Volcano plot and stats table
-  output$volcano_plot <- renderPlotly({
-    req(length(input$stats_datasets) > 0,
-        length(input$stats_age_groups) > 0,
-        input$stats_grouping)
+output$volcano_plot <- renderPlotly({
+  req(length(input$stats_datasets) > 0,
+      length(input$stats_age_groups) > 0,
+      input$stats_grouping)
+  
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  
+  # Prepare data with proper error handling
+  plot_data <- tryCatch({
+    combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
+      if (ds %in% names(datasets)) {
+        datasets[[ds]]
+      } else {
+        NULL
+      }
+    }))
     
-    # Prepare data
-    plot_data <- bind_rows(!!!integrated_datasets[input$stats_datasets]) %>%
-      filter(age_group %in% input$stats_age_groups)
-    
-    if(input$stats_grouping == "custom") {
-      plot_data <- apply_custom_group(plot_data, custom_groups())
-    }
-    
-    # Get parameters
-    params <- names(plot_data)[!names(plot_data) %in% 
-                                c("participant_id", "month", "age", "sex", "age_group", 
-                                  "dataset", "group_combined", "custom_group")]
-    
-    # Calculate volcano plot data
-    volcano_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
-    
-    # Create volcano plot
-    p <- ggplot(volcano_data, 
-                aes(x = effect_size, 
-                    y = -log10(p_value),
-                    color = significant,
-                    text = paste("Parameter:", parameter_label,
-                               "\nEffect Size:", round(effect_size, 3),
-                               "\np-value:", format.pval(p_value, digits = 3)))) +
-      geom_point(size = 3) +
-      geom_hline(yintercept = -log10(0.05), 
-                 linetype = "dashed", 
-                 color = "grey50", 
-                 alpha = 0.5) +
-      scale_color_manual(values = c("TRUE" = "#FF9642", "FALSE" = "#87CEEB")) +
-      theme_minimal() +
-      labs(
-        title = paste("Volcano Plot by", str_to_title(input$stats_grouping)),
-        x = "Effect Size",
-        y = "-log10(p-value)",
-        color = "Significant"
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5)
-      )
-    
-    ggplotly(p, tooltip = "text")
-  })
-
-  # ...existing code...
-
-  # Update stats table
-  output$stats_table <- renderDT({
-    req(length(input$stats_datasets) > 0,
-        length(input$stats_age_groups) > 0,
-        input$stats_grouping)
-    
-    # Prepare data
-    plot_data <- bind_rows(!!!integrated_datasets[input$stats_datasets]) %>%
-      filter(age_group %in% input$stats_age_groups)
+    # Filter by age groups
+    filtered_data <- combined_data %>%
+      filter(.data$age_group %in% input$stats_age_groups)
     
     if(input$stats_grouping == "custom") {
-      plot_data <- apply_custom_group(plot_data, custom_groups())
+      filtered_data <- apply_custom_group(filtered_data, custom_groups())
     }
     
-    # Get parameters
-    params <- names(plot_data)[!names(plot_data) %in% 
-                                c("participant_id", "month", "age", "sex", "age_group", 
-                                  "dataset", "group_combined", "custom_group")]
+    filtered_data
     
-    # Calculate statistics
-    stats_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
-    
-    # Format for display
-    stats_data %>%
-      mutate(
-        p_value = format.pval(p_value, digits = 3),
-        effect_size = round(effect_size, 3),
-        fdr_p_value = format.pval(fdr_p_value, digits = 3)
-      ) %>%
-      datatable(
-        options = list(
-          pageLength = 15,
-          scrollX = TRUE
-        ),
-        rownames = FALSE
-      ) %>%
-      formatStyle(
-        'significant',
-        backgroundColor = styleEqual(c(TRUE, FALSE), c('#90EE90', '#FFB6C6'))
-      )
+  }, error = function(e) {
+    message("Error in volcano plot data preparation: ", e$message)
+    NULL
   })
-}
+  
+  req(plot_data)
+  
+  # Get parameters excluding metadata columns
+  params <- names(plot_data)[!names(plot_data) %in% 
+    c("participant_id", "month", "age", "sex", "age_group", 
+      "dataset", "group_combined", "custom_group")]
+  
+  # Calculate volcano plot data
+  volcano_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
+  
+  # Create volcano plot with symmetrical layout
+  p <- ggplot(volcano_data, 
+              aes(x = effect_size, 
+                  y = -log10(p_value),
+                  color = significant,
+                  text = paste("Parameter:", parameter_label,
+                             "\nEffect Size:", round(effect_size, 3),
+                             "\np-value:", format.pval(p_value, digits = 3)))) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = -log10(0.05), 
+               linetype = "dashed", 
+               color = "grey50", 
+               alpha = 0.5) +
+    scale_color_manual(values = c("TRUE" = "#FF9642", "FALSE" = "#87CEEB")) +
+    # Add these lines for symmetric x-axis
+    scale_x_continuous(limits = function(x) {
+      max_abs <- max(abs(x))
+      c(-max_abs, max_abs)
+    }) +
+    theme_minimal() +
+    labs(
+      title = paste("Volcano Plot by", str_to_title(input$stats_grouping)),
+      x = "Effect Size",
+      y = "-log10(p-value)",
+      color = "Significant"
+    ) +
+    theme(
+      text = element_text(family = "Manrope"),
+      plot.title = element_text(hjust = 0.5)
+    )
+  
+  ggplotly(p, tooltip = "text")
+})
+
+# Update stats table
+output$stats_table <- renderDT({
+  req(length(input$stats_datasets) > 0,
+      length(input$stats_age_groups) > 0,
+      input$stats_grouping)
+  
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  
+  # Prepare data with proper error handling
+  plot_data <- tryCatch({
+    combined_data <- bind_rows(!!!lapply(input$stats_datasets, function(ds) {
+      if (ds %in% names(datasets)) {
+        datasets[[ds]]
+      } else {
+        NULL
+      }
+    }))
+    
+    # Filter and process
+    filtered_data <- combined_data %>%
+      filter(.data$age_group %in% input$stats_age_groups)
+    
+    if(input$stats_grouping == "custom") {
+      filtered_data <- apply_custom_group(filtered_data, custom_groups())
+    }
+    
+    filtered_data
+    
+  }, error = function(e) {
+    message("Error in stats table data preparation: ", e$message)
+    NULL
+  })
+  
+  req(plot_data)
+  
+  # Get parameters
+  params <- names(plot_data)[!names(plot_data) %in% 
+    c("participant_id", "month", "age", "sex", "age_group", 
+      "dataset", "group_combined", "custom_group")]
+  
+  # Calculate statistics
+  stats_data <- calculate_volcano_data(plot_data, params, input$stats_grouping)
+  
+  # Format for display
+  stats_data %>%
+    mutate(
+      p_value = format.pval(p_value, digits = 3),
+      effect_size = round(effect_size, 3),
+      fdr_p_value = format.pval(fdr_p_value, digits = 3)
+    ) %>%
+    datatable(
+      options = list(
+        pageLength = 15,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    ) %>%
+    formatStyle(
+      'significant',
+      backgroundColor = styleEqual(c(TRUE, FALSE), c('#90EE90', '#FFB6C6'))
+    )
+})

@@ -199,45 +199,67 @@ apply_custom_group <- function(data, custom_groups) {
 }
 
 # Function to calculate volcano plot data
-calculate_volcano_data <- function(data, param_list, grouping_var) {
-  map_df(param_list, function(param) {
+calculate_volcano_data <- function(data, parameters, grouping_var) {
+  # Initialize results dataframe
+  results <- data.frame(
+    parameter = character(),
+    parameter_label = character(),
+    effect_size = numeric(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Get grouping variable
+  group_col <- data[[grouping_var]]
+  
+  # Check if we have exactly two groups
+  unique_groups <- unique(group_col)
+  if(length(unique_groups) != 2) {
+    warning("Volcano plot requires exactly two groups for comparison")
+    return(NULL)
+  }
+  
+  # For each parameter
+  for(param in parameters) {
     tryCatch({
-      # Prepare data
-      test_data <- data %>%
-        select(!!sym(grouping_var), !!sym(param)) %>%
-        drop_na()
+      # Perform t-test
+      t_result <- t.test(data[[param]] ~ group_col)
       
-      if(n_distinct(test_data[[grouping_var]]) == 2) {
-        # For two groups - use t-test and Cohen's d
-        t_res <- t.test(as.formula(paste(param, "~", grouping_var)), data = test_data)
-        eff_size <- cohens_d(test_data, as.formula(paste(param, "~", grouping_var)))$effsize
-        
-        tibble(
-          parameter = param,
-          p_value = t_res$p.value,
-          effect_size = eff_size,
-          test_type = "t-test"
-        )
-      } else if(n_distinct(test_data[[grouping_var]]) > 2) {
-        # For multiple groups - use ANOVA and eta squared
-        aov_res <- aov(as.formula(paste(param, "~", grouping_var)), data = test_data)
-        p_val <- summary(aov_res)[[1]]$"Pr(>F)"[1]
-        eta_sq <- summary.lm(aov_res)$r.squared
-        
-        tibble(
-          parameter = param,
-          p_value = p_val,
-          effect_size = eta_sq,
-          test_type = "ANOVA"
-        )
-      }
-    }, error = function(e) NULL)
-  }) %>%
+      # Calculate Cohen's d effect size
+      group1_data <- data[[param]][group_col == unique_groups[1]]
+      group2_data <- data[[param]][group_col == unique_groups[2]]
+      
+      # Pooled standard deviation
+      n1 <- length(group1_data)
+      n2 <- length(group2_data)
+      s1 <- sd(group1_data)
+      s2 <- sd(group2_data)
+      pooled_sd <- sqrt(((n1-1)*s1^2 + (n2-1)*s2^2)/(n1+n2-2))
+      
+      # Effect size (Cohen's d)
+      effect_size <- (mean(group2_data) - mean(group1_data))/pooled_sd
+      
+      # Add to results
+      results <- rbind(results, data.frame(
+        parameter = param,
+        parameter_label = str_to_title(str_replace_all(param, "_", " ")),
+        effect_size = effect_size,
+        p_value = t_result$p.value,
+        stringsAsFactors = FALSE
+      ))
+    }, error = function(e) {
+      warning(paste("Error processing parameter:", param, "-", e$message))
+    })
+  }
+  
+  # Add FDR-adjusted p-values and significance
+  results <- results %>%
     mutate(
-      significant = p_value < 0.05,
-      fdr_p_value = p.adjust(p_value, method = "BH"),
-      parameter_label = str_to_title(str_replace_all(parameter, "_", " "))
+      fdr_p_value = p.adjust(p_value, method = "fdr"),
+      significant = fdr_p_value < 0.05
     )
+  
+  return(results)
 }
 
 # Function to validate external dataset
