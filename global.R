@@ -185,7 +185,7 @@ apply_custom_group <- function(data, custom_groups) {
     return(data)
   }
   
-  # Create cases for case_when
+  # Create cases for case_when using the order of the custom groups
   cases <- lapply(names(custom_groups), function(group_name) {
     quo(age_group %in% !!custom_groups[[group_name]] ~ !!group_name)
   })
@@ -193,13 +193,23 @@ apply_custom_group <- function(data, custom_groups) {
   # Add default case
   cases$default <- quo(TRUE ~ "Other")
   
-  # Apply grouping
+  # Apply grouping and convert to factor with levels in original order
   data %>%
-    mutate(custom_group = case_when(!!!cases))
+    mutate(
+      custom_group = case_when(!!!cases),
+      custom_group = factor(custom_group, levels = c(names(custom_groups), "Other"))
+    )
 }
 
 # Function to calculate volcano plot data
-calculate_volcano_data <- function(data, parameters, grouping_var) {
+calculate_volcano_data <- function(data, parameters, grouping_var, comparison) {
+  # Split comparison into two groups
+  groups <- strsplit(comparison, " vs ")[[1]]
+  
+  # Subset data for selected groups
+  subset_data <- data %>%
+    filter(!!sym(grouping_var) %in% groups)
+  
   # Initialize results dataframe
   results <- data.frame(
     parameter = character(),
@@ -209,28 +219,18 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
     stringsAsFactors = FALSE
   )
   
-  # Get grouping variable
-  group_col <- data[[grouping_var]]
-  
-  # Check if we have exactly two groups
-  unique_groups <- sort(unique(group_col))  # Sort to ensure consistent ordering
-  if(length(unique_groups) != 2) {
-    warning("Volcano plot requires exactly two groups for comparison")
-    return(NULL)
-  }
-  
   # For each parameter
   for(param in parameters) {
     tryCatch({
       # Get data for each group
-      group1_data <- data[[param]][group_col == unique_groups[1]]
-      group2_data <- data[[param]][group_col == unique_groups[2]]
+      group1_data <- subset_data[[param]][subset_data[[grouping_var]] == groups[1]]
+      group2_data <- subset_data[[param]][subset_data[[grouping_var]] == groups[2]]
       
       # Remove NA values
       group1_data <- group1_data[!is.na(group1_data)]
       group2_data <- group2_data[!is.na(group2_data)]
       
-      # Calculate means and SDs
+      # Calculate statistics
       n1 <- length(group1_data)
       n2 <- length(group2_data)
       m1 <- mean(group1_data)
@@ -244,7 +244,7 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
       # Effect size (Cohen's d)
       effect_size <- (m2 - m1)/pooled_sd
       
-      # Welch's t-test (doesn't assume equal variances)
+      # Welch's t-test
       t_result <- t.test(group2_data, group1_data, var.equal = FALSE)
       
       # Add to results
@@ -253,6 +253,9 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
         parameter_label = str_to_title(str_replace_all(param, "_", " ")),
         effect_size = effect_size,
         p_value = t_result$p.value,
+        comparison = comparison,
+        group1 = groups[1],
+        group2 = groups[2],
         stringsAsFactors = FALSE
       ))
       
@@ -261,13 +264,12 @@ calculate_volcano_data <- function(data, parameters, grouping_var) {
     })
   }
   
-  # Add FDR-adjusted p-values and significance
+  # Add FDR-adjusted p-values
   if(nrow(results) > 0) {
     results <- results %>%
       mutate(
         fdr_p_value = p.adjust(p_value, method = "fdr"),
         significant = fdr_p_value < 0.05,
-        # Add log fold change for additional context
         log_p = -log10(p_value)
       )
   }
@@ -404,7 +406,7 @@ process_external_data <- function(data_path, mapping_df, dataset_name) {
   return(processed_data)
 }
 
-# Function to generate mapping template
+# Function to generate mapping template with proper metadata
 generate_mapping_template <- function() {
   bharat_cols <- names(blood_data_with_demo)
   template <- data.frame(
@@ -412,8 +414,13 @@ generate_mapping_template <- function() {
     bharat_column = bharat_cols,
     data_type = sapply(blood_data_with_demo, function(x) class(x)[1]),
     description = paste("Enter description for", bharat_cols),
-    required = ifelse(bharat_cols %in% c("participant_id"), "Yes", "No")
+    required = ifelse(bharat_cols %in% c("participant_id", "age", "sex"), "Yes", "No")
   )
+  
+  # Ensure required columns appear first
+  template <- template %>%
+    arrange(desc(required), bharat_column)
+    
   return(template)
 }
 
@@ -424,3 +431,22 @@ selectInput("age_groups",
             choices = c("18-29", "30-44", "45-59", "60-74", "75+"),
             selected = c("18-29", "30-44", "45-59", "60-74", "75+"),
             multiple = TRUE)
+
+# Add to global.R
+
+# Function to save datasets
+saveDatasets <- function(datasets, dir = "data/saved_datasets") {
+  if(!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  saveRDS(datasets, file.path(dir, "integrated_datasets.rds"))
+}
+
+# Function to load saved datasets
+loadSavedDatasets <- function(dir = "data/saved_datasets") {
+  rds_file <- file.path(dir, "integrated_datasets.rds")
+  if(file.exists(rds_file)) {
+    readRDS(rds_file)
+  } else {
+    list("BHARAT" = blood_data_with_demo)
+  }
+}
+

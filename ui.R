@@ -25,6 +25,12 @@ dashboardPage(
           border-radius: 4px;
         }
         .group-item:hover { background-color: #f5f5f5; }
+        
+        /* Delete button styling */
+        .btn-danger { margin-top: 10px; }
+        
+        /* Dataset management spacing */
+        #dataset_to_delete { margin-bottom: 10px; }
       "))
     ),
     sidebarMenu(
@@ -97,7 +103,7 @@ dashboardPage(
                   tabsetPanel(
                     tabPanel("Age Distribution",
                             fluidRow(
-                              column(8,
+                              column(8, 
                                      plotlyOutput("age_distribution", height = "500px")
                               ),
                               column(4,
@@ -149,7 +155,8 @@ dashboardPage(
                              icon = icon("object-group"),
                              class = "btn-info btn-sm"),
                   
-                  # Parameter selection
+                  # Parameter selection with common parameters filter
+                  checkboxInput("show_common_only", "Show Common Parameters Only", FALSE),
                   selectizeInput("blood_param", "Select Parameter",
                                choices = param_choices,
                                multiple = FALSE),
@@ -285,8 +292,23 @@ dashboardPage(
                       DTOutput("integrated_datasets_table")
                     )
                   )
+                )),
+              # Dataset Management Box
+              fluidRow(
+                box(
+                  width = 12,
+                  title = "Manage Datasets",
+                  status = "warning",
+                  solidHeader = TRUE,
+                  
+                  selectInput("dataset_to_delete", "Select Dataset to Delete",
+                            choices = NULL),
+                  actionButton("delete_dataset", "Delete Dataset",
+                             class = "btn-danger",
+                             icon = icon("trash"))
                 )
-              )),
+              )
+      ),
       
       # Statistical Summary tab
       tabItem(tabName = "stats",
@@ -322,6 +344,11 @@ dashboardPage(
                                "Custom Groups" = "custom"
                              ),
                              inline = TRUE),
+                  
+                  # Group comparison selection for volcano plot
+                  selectInput("volcano_comparison", "Select Comparison",
+                            choices = NULL,
+                            width = "100%"),
                   
                   DTOutput("stats_table")
                 )

@@ -12,9 +12,7 @@ function(input, output, session) {
   custom_groups <- reactiveVal(list())
   
   # Initialize reactive value for integrated datasets
-  integrated_datasets_rv <- reactiveVal(list(
-    "BHARAT" = blood_data_with_demo
-  ))
+integrated_datasets_rv <- reactiveVal(loadSavedDatasets())
   
   # Helper function to get the right grouping
   get_group_var <- reactive({
@@ -104,18 +102,79 @@ prepare_plot_data <- reactive({
   })
   
   # Custom group management
-  observeEvent(input$add_group, {
-    req(input$group_name, input$group_ranges)
-    
-    current_groups <- custom_groups()
-    current_groups[[input$group_name]] <- input$group_ranges
-    custom_groups(current_groups)
-    
-    # Reset inputs
-    updateTextInput(session, "group_name", value = "")
-    updateSelectInput(session, "group_ranges", selected = character(0))
-  })
+observeEvent(input$add_group, {
+  req(input$group_name, input$group_ranges)
   
+  if(input$group_name == "" || length(input$group_ranges) == 0) {
+    showNotification("Please provide both group name and ranges", type = "error")
+    return()
+  }
+  
+  # Get current groups while maintaining order
+  current_groups <- custom_groups()
+  
+  # Add new group while preserving order
+  current_groups[[input$group_name]] <- input$group_ranges
+  custom_groups(current_groups)
+  
+  # Update UI
+  updateTextInput(session, "group_name", value = "")
+  updateSelectInput(session, "group_ranges", selected = character(0))
+  
+  output$download_template <- downloadHandler(
+  filename = function() {
+    paste0("mapping_template_", format(Sys.time(), "%Y%m%d"), ".csv")
+  },
+  content = function(file) {
+    write.csv(generate_mapping_template(), file, row.names = FALSE)
+  }
+)
+
+  # Update table
+  output$current_groups <- renderDT({
+    groups_df <- data.frame(
+      Group = names(current_groups),
+      Ranges = sapply(current_groups, paste, collapse = ", "),
+      stringsAsFactors = FALSE
+    )
+    datatable(groups_df, 
+              selection = 'single',
+              options = list(
+                pageLength = 5,
+                lengthChange = FALSE,
+                searching = FALSE,
+                order = list(0, 'asc')  # Order by first column ascending
+              ))
+  })
+})
+  
+# Add this new observer for dataset deletion
+observeEvent(input$delete_dataset, {
+  req(input$dataset_to_delete)
+  
+  current_datasets <- integrated_datasets_rv()
+  
+  # Don't allow deletion of BHARAT dataset
+  if(input$dataset_to_delete == "BHARAT") {
+    showNotification("Cannot delete the BHARAT dataset", type = "error")
+    return()
+  }
+  
+  # Remove dataset
+  current_datasets[[input$dataset_to_delete]] <- NULL
+  integrated_datasets_rv(current_datasets)
+  
+  # Save updated datasets
+  saveDatasets(current_datasets)
+  
+  # Update UI
+  updateSelectInput(session, "dataset_to_delete",
+                   choices = setdiff(names(current_datasets), "BHARAT"))
+  
+  showNotification(paste("Deleted dataset:", input$dataset_to_delete), 
+                  type = "message")
+})
+
   observeEvent(input$remove_selected_groups, {
     req(input$current_groups_rows_selected)
     
@@ -125,9 +184,35 @@ prepare_plot_data <- reactive({
     custom_groups(current_groups)
   })
 
+filtered_params <- reactive({
+  req(input$selected_datasets)
+  
+  if(!input$show_common_only || length(input$selected_datasets) <= 1) {
+    return(param_choices)
+  }
+  
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  
+  # Find common parameters
+  common_params <- Reduce(intersect, 
+    lapply(input$selected_datasets, function(ds) {
+      names(datasets[[ds]])
+    })
+  )
+  
+  # Filter param_choices to only common parameters
+  param_choices[names(param_choices) %in% common_params]
+})
+
+# Update parameter selection based on common parameters filter
+observe({
+  updateSelectizeInput(session, "blood_param",
+                      choices = filtered_params())
+})
+
 # Section 3: Plot Outputs -------------------------
-  # Blood parameter visualization
-  # Blood parameter visualization
+  # Blood parameter visualization  
 output$blood_dist <- renderPlotly({
   req(input$blood_param)
   
@@ -140,7 +225,7 @@ output$blood_dist <- renderPlotly({
   current_var <- input$blood_param
   group_var <- get_group_var()
   
-  # Create plotting data with dataset tracking
+  # Create plotting data with dataset tracking and proper group ordering
   plot_df <- plot_df %>%
     mutate(
       group = !!sym(group_var),
@@ -148,6 +233,11 @@ output$blood_dist <- renderPlotly({
       point_color = if(input$color_by == "dataset") dataset else if(input$color_by != "none") !!sym(input$color_by) else group
     ) %>%
     drop_na(group, y_val)
+  
+  # If using custom groups, set the factor levels based on order of creation
+  if(input$grouping == "custom" && !is.null(custom_groups())) {
+    plot_df$group <- factor(plot_df$group, levels = names(custom_groups()))
+  }
   
   # Get reference ranges if available
   ref_range <- blood_metadata %>%
@@ -167,7 +257,7 @@ output$blood_dist <- renderPlotly({
   y_min <- y_min - 0.05 * y_range
   y_max <- y_max + 0.05 * y_range
   
-  # Set up aesthetics to always include dataset info
+  # Set up aesthetics
   aes_mapping <- aes(
     x = group, 
     y = y_val,
@@ -207,10 +297,7 @@ output$blood_dist <- renderPlotly({
     labs(
       title = str_to_title(str_replace_all(current_var, "_", " ")),
       x = str_to_title(str_replace_all(group_var, "_", " ")),
-      y = paste0(
-        str_to_title(str_replace_all(current_var, "_", " ")),
-        " (", blood_metadata$testmeasuringunit[blood_metadata$testname == str_replace_all(current_var, "_", "-")], ")"
-      ),
+      y = NULL,  # Remove y-axis label
       color = str_to_title(str_replace_all(
         if(input$color_by != "none") input$color_by else group_var, 
         "_", " "
@@ -487,55 +574,43 @@ output$blood_dist <- renderPlotly({
     })
   })
 
-  # Integration handler
   observeEvent(input$integrate_data, {
-    req(integration_state$processed_data,
-        integration_state$validation_result$valid,
-        input$dataset_name)
-    
-    withProgress(message = 'Integrating dataset...', value = 0, {
-      tryCatch({
-        message("Current integrated datasets:")
-        message(paste(names(integrated_datasets_rv()), collapse = ", "))
-        
-        # Update datasets
-        current_datasets <- integrated_datasets_rv()
-        current_datasets[[input$dataset_name]] <- integration_state$processed_data
-        integrated_datasets_rv(current_datasets)
-        
-        # Update UI
-        choices <- setNames(
-          names(current_datasets),
-          paste(names(current_datasets), "Data")
-        )
-        
-        updateCheckboxGroupInput(session, "selected_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        updateCheckboxGroupInput(session, "demo_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        updateCheckboxGroupInput(session, "stats_datasets", 
-                               choices = choices,
-                               selected = c("BHARAT", input$dataset_name))
-        
-        showNotification(
-          paste("Successfully integrated dataset:", input$dataset_name),
-          type = "message",
-          duration = 5
-        )
-      }, error = function(e) {
-        message("Integration error:", e$message)
-        showNotification(
-          paste("Error during integration:", e$message),
-          type = "error",
-          duration = NULL
-        )
-      })
+  req(integration_state$processed_data,
+      integration_state$validation_result$valid,
+      input$dataset_name)
+  
+  withProgress(message = 'Integrating dataset...', value = 0, {
+    tryCatch({
+      current_datasets <- integrated_datasets_rv()
+      current_datasets[[input$dataset_name]] <- integration_state$processed_data
+      integrated_datasets_rv(current_datasets)
+      
+      # Save datasets to persistent storage
+      saveDatasets(current_datasets)
+      
+      # Update UI selections
+      choices <- setNames(
+        names(current_datasets),
+        paste(names(current_datasets), "Data")
+      )
+      
+      updateCheckboxGroupInput(session, "selected_datasets", 
+                             choices = choices,
+                             selected = c("BHARAT", input$dataset_name))
+      
+      showNotification(
+        paste("Successfully integrated dataset:", input$dataset_name),
+        type = "message"
+      )
+    }, error = function(e) {
+      showNotification(
+        paste("Error during integration:", e$message),
+        type = "error",
+        duration = NULL
+      )
     })
   })
+})
 
 # Section 5: Additional Plot & Table Outputs -------------------------
   # Age groups distribution
@@ -587,6 +662,29 @@ output$blood_dist <- renderPlotly({
     
     ggplotly(p)
   })
+
+observe({
+  req(input$stats_grouping)
+  
+  # Get the grouped data
+  plot_data <- prepare_plot_data()
+  req(plot_data)
+  
+  # Get groups based on selected grouping
+  groups <- switch(input$stats_grouping,
+    "age" = input$stats_age_groups,
+    "sex" = c("Male", "Female"),
+    "combined" = unique(plot_data$group_combined),
+    "custom" = names(custom_groups())
+  )
+  
+  # Generate pairwise combinations
+  if(length(groups) >= 2) {
+    comparisons <- utils::combn(groups, 2, paste, collapse=" vs ")
+    updateSelectInput(session, "volcano_comparison",
+                     choices = comparisons)
+  }
+})
 
   # Volcano plot
   output$volcano_plot <- renderPlotly({
