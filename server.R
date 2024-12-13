@@ -25,58 +25,61 @@ function(input, output, session) {
            "custom" = "custom_group")
   })
   
-  # Core data preparation function
-  prepare_plot_data <- reactive({
-    req(input$selected_datasets, input$selected_age_groups)
-    
-    # Get current datasets
-    datasets <- integrated_datasets_rv()
-    
-    # Debug print
-    message("Preparing plot data")
-    message("Selected datasets: ", paste(input$selected_datasets, collapse=", "))
-    
-    # Safely combine datasets
-    plot_data <- tryCatch({
-      combined_data <- bind_rows(!!!lapply(input$selected_datasets, function(ds) {
-        if (ds %in% names(datasets)) {
-          data <- datasets[[ds]]
-          message(paste("Processing dataset:", ds))
-          message(paste("Dimensions:", nrow(data), "x", ncol(data)))
-          data
-        } else {
-          message(paste("Dataset not found:", ds))
-          NULL
-        }
-      }))
-      
-      if(is.null(combined_data) || nrow(combined_data) == 0) {
+  # Function to filter and prepare data based on selections
+prepare_plot_data <- reactive({
+  req(input$selected_datasets, input$selected_age_groups)
+  
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  
+  # Debug print
+  message("Preparing plot data")
+  message("Selected datasets:", paste(input$selected_datasets, collapse=", "))
+  
+  # Combine selected datasets with proper error handling for missing columns
+  plot_data <- tryCatch({
+    # First collect all datasets
+    all_data <- lapply(input$selected_datasets, function(ds) {
+      if (ds %in% names(datasets)) {
+        data <- datasets[[ds]]
+        message(paste("Processing dataset:", ds))
+        message(paste("Dimensions before filtering:", nrow(data), "x", ncol(data)))
+        
+        # Filter by age groups first
+        filtered <- data %>%
+          filter(.data$age_group %in% input$selected_age_groups)
+        
+        message(paste("Dimensions after filtering:", nrow(filtered), "x", ncol(filtered)))
+        return(filtered)
+      } else {
+        message(paste("Dataset not found:", ds))
         return(NULL)
       }
-      
-      # Filter and prepare data
-      filtered_data <- combined_data %>%
-        filter(.data$age_group %in% input$selected_age_groups)
-      
-      # Apply custom grouping if selected
-      if(input$grouping == "custom" && length(custom_groups()) > 0) {
-        filtered_data <- apply_custom_group(filtered_data, custom_groups())
-      }
-      
-      filtered_data
-      
-    }, error = function(e) {
-      message("Error in prepare_plot_data: ", e$message)
-      NULL
     })
     
-    # Debug print final dimensions
-    if(!is.null(plot_data)) {
-      message(paste("Final data dimensions:", nrow(plot_data), "x", ncol(plot_data)))
+    # Remove NULL entries
+    all_data <- all_data[!sapply(all_data, is.null)]
+    
+    if(length(all_data) == 0) {
+      message("No valid datasets to combine")
+      return(NULL)
     }
     
-    return(plot_data)
+    # Combine using bind_rows (this preserves dataset column)
+    combined_data <- bind_rows(all_data)
+    
+    message("Final combined dimensions:", nrow(combined_data), "x", ncol(combined_data))
+    message("Columns in combined data:", paste(names(combined_data), collapse=", "))
+    
+    return(combined_data)
+    
+  }, error = function(e) {
+    message("Error in prepare_plot_data: ", e$message)
+    return(NULL)
   })
+  
+  return(plot_data)
+})
 
   # Section 2: UI Observers and Event Handlers -------------------------
   # Update dataset selection inputs
@@ -124,187 +127,184 @@ function(input, output, session) {
 
 # Section 3: Plot Outputs -------------------------
   # Blood parameter visualization
-  output$blood_dist <- renderPlotly({
-    req(input$blood_param)
-    
-    # Get plot data
-    plot_df <- prepare_plot_data()
-    req(plot_df)
-    
-    # Get current variable and grouping
-    current_var <- input$blood_param
-    group_var <- get_group_var()
-    
-    # Create plotting data
-    plot_df <- plot_df %>%
-      mutate(
-        group = !!sym(group_var),
-        y_val = !!sym(current_var)
-      ) %>%
-      drop_na()
-    
-    # Get reference ranges if available
-    ref_range <- blood_metadata %>%
-      filter(testname == str_replace_all(current_var, "_", "-")) %>%
-      select(testminrangevalue, testmaxrangevalue)
-    
-    # Y-axis limits
-    y_min <- min(plot_df$y_val, na.rm = TRUE)
-    y_max <- max(plot_df$y_val, na.rm = TRUE)
-    
-    if(nrow(ref_range) > 0) {
-      if(!is.na(ref_range$testminrangevalue)) y_min <- min(y_min, ref_range$testminrangevalue)
-      if(!is.na(ref_range$testmaxrangevalue)) y_max <- max(y_max, ref_range$testmaxrangevalue)
-    }
-    
-    y_range <- y_max - y_min
-    y_min <- y_min - 0.05 * y_range
-    y_max <- y_max + 0.05 * y_range
-    
-    # Set up aesthetics
+  # Blood parameter visualization
+output$blood_dist <- renderPlotly({
+  req(input$blood_param)
+  
+  # Get plot data
+  plot_df <- prepare_plot_data()
+  req(plot_df)
+  req(input$blood_param %in% names(plot_df))
+  
+  # Get current variable and grouping
+  current_var <- input$blood_param
+  group_var <- get_group_var()
+  
+  # Create plotting data with dataset tracking
+  plot_df <- plot_df %>%
+    mutate(
+      group = !!sym(group_var),
+      y_val = !!sym(current_var),
+      point_color = if(input$color_by == "dataset") dataset else if(input$color_by != "none") !!sym(input$color_by) else group
+    ) %>%
+    drop_na(group, y_val)
+  
+  # Get reference ranges if available
+  ref_range <- blood_metadata %>%
+    filter(testname == str_replace_all(current_var, "_", "-")) %>%
+    select(testminrangevalue, testmaxrangevalue)
+  
+  # Y-axis limits
+  y_min <- min(plot_df$y_val, na.rm = TRUE)
+  y_max <- max(plot_df$y_val, na.rm = TRUE)
+  
+  if(nrow(ref_range) > 0) {
+    if(!is.na(ref_range$testminrangevalue)) y_min <- min(y_min, ref_range$testminrangevalue)
+    if(!is.na(ref_range$testmaxrangevalue)) y_max <- max(y_max, ref_range$testmaxrangevalue)
+  }
+  
+  y_range <- y_max - y_min
+  y_min <- y_min - 0.05 * y_range
+  y_max <- y_max + 0.05 * y_range
+  
+  # Set up aesthetics to always include dataset info
+  aes_mapping <- aes(
+    x = group, 
+    y = y_val,
+    color = point_color,
+    text = paste(
+      "ID:", participant_id,
+      "\nValue:", round(y_val, 2),
+      "\nGroup:", group,
+      "\nDataset:", dataset
+    )
+  )
+  
+  # Get colors based on grouping
+  n_colors <- length(unique(plot_df$point_color))
+  colors <- if(input$color_by == "dataset") {
+    dataset_colors[unique(plot_df$dataset)]
+  } else {
+    get_color_palette(input$color_scheme, n_colors)
+  }
+  
+  # Create base plot
+  p <- ggplot(plot_df, aes_mapping) +
+    theme_minimal(base_size = 14) +
+    theme(
+      text = element_text(family = "Manrope"),
+      axis.title = element_text(family = "Manrope", size = 12),
+      axis.text = element_text(family = "Manrope", size = 10),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "right",
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 12),
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10)
+    ) +
+    scale_color_manual(values = colors) +
+    labs(
+      title = str_to_title(str_replace_all(current_var, "_", " ")),
+      x = str_to_title(str_replace_all(group_var, "_", " ")),
+      y = paste0(
+        str_to_title(str_replace_all(current_var, "_", " ")),
+        " (", blood_metadata$testmeasuringunit[blood_metadata$testname == str_replace_all(current_var, "_", "-")], ")"
+      ),
+      color = str_to_title(str_replace_all(
+        if(input$color_by != "none") input$color_by else group_var, 
+        "_", " "
+      ))
+    )
+  
+  # Add plot elements based on type with better group handling
+  p <- if(input$plot_type == "box") {
     if(input$color_by != "none" && input$color_by != group_var) {
-      plot_df$color_group <- plot_df[[input$color_by]]
-      n_colors <- length(unique(plot_df$color_group))
-      aes_mapping <- aes(x = group, y = y_val, 
-                        color = color_group,
-                        text = paste("ID:", participant_id, 
-                                   "\nValue:", round(y_val, 2),
-                                   "\nGroup:", group,
-                                   "\nColor:", color_group))
-    } else {
-      plot_df$color_group <- plot_df$group
-      n_colors <- length(unique(plot_df$group))
-      aes_mapping <- aes(x = group, y = y_val, 
-                        color = group,
-                        text = paste("ID:", participant_id, 
-                                   "\nValue:", round(y_val, 2),
-                                   "\nGroup:", group))
-    }
-    
-    # Get colors
-    if(input$color_by == "dataset") {
-      colors <- dataset_colors[unique(plot_df$dataset)]
-    } else {
-      colors <- get_color_palette(input$color_scheme, n_colors)
-    }
-    
-    # Create base plot
-    p <- ggplot(plot_df, aes_mapping) +
-      theme_minimal(base_size = 14) +
-      theme(
-        text = element_text(family = "Manrope"),
-        axis.title = element_text(family = "Manrope", size = 12),
-        axis.text = element_text(family = "Manrope", size = 10),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid.minor = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 12),
-        legend.title = element_text(size = 12),
-        legend.text = element_text(size = 10)
-      ) +
-      scale_color_manual(values = colors) +
-      labs(
-        title = str_to_title(str_replace_all(current_var, "_", " ")),
-        x = str_to_title(str_replace_all(group_var, "_", " ")),
-        y = paste0(
-          str_to_title(str_replace_all(current_var, "_", " ")),
-          " (", blood_metadata$testmeasuringunit[blood_metadata$testname == str_replace_all(current_var, "_", "-")], ")"
-        ),
-        color = str_to_title(str_replace_all(
-          if(input$color_by != "none") input$color_by else group_var, 
-          "_", " "
-        ))
-      )
-    
-    # Add plot elements based on type with better group handling
-    p <- if(input$plot_type == "box") {
-      if(input$color_by != "none" && input$color_by != group_var) {
-        p + 
-          geom_boxplot(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            aes(color = NULL), 
-            alpha = 0.3, 
-            width = 0.7, 
-            outlier.shape = NA
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      } else {
-        p + 
-          geom_boxplot(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            alpha = 0.3, 
-            width = 0.7, 
-            outlier.shape = NA
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      }
-    } else if(input$plot_type == "violin") {
-      if(input$color_by != "none" && input$color_by != group_var) {
-        p + 
-          geom_violin(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            aes(color = NULL), 
-            alpha = 0.3, 
-            trim = FALSE
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      } else {
-        p + 
-          geom_violin(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            alpha = 0.3, 
-            trim = FALSE
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      }
+      p + 
+        geom_boxplot(
+          data = plot_df %>% 
+            group_by(group) %>% 
+            filter(n() >= 2) %>% 
+            ungroup(),
+          aes(color = NULL), 
+          alpha = 0.3, 
+          width = 0.7, 
+          outlier.shape = NA
+        ) +
+        geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
     } else {
       p + 
+        geom_boxplot(
+          data = plot_df %>% 
+            group_by(group) %>% 
+            filter(n() >= 2) %>% 
+            ungroup(),
+          alpha = 0.3, 
+          width = 0.7, 
+          outlier.shape = NA
+        ) +
         geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
     }
-    
-    # Add reference ranges if selected
-    if(input$show_ref && nrow(ref_range) > 0) {
-      if(!is.na(ref_range$testminrangevalue)) {
-        p <- p + geom_hline(
-          yintercept = ref_range$testminrangevalue,
-          linetype = "dashed", 
-          color = "grey50", 
-          alpha = 0.5
-        )
-      }
-      if(!is.na(ref_range$testmaxrangevalue)) {
-        p <- p + geom_hline(
-          yintercept = ref_range$testmaxrangevalue,
-          linetype = "dashed", 
-          color = "grey50", 
-          alpha = 0.5
-        )
-      }
+  } else if(input$plot_type == "violin") {
+    if(input$color_by != "none" && input$color_by != group_var) {
+      p + 
+        geom_violin(
+          data = plot_df %>% 
+            group_by(group) %>% 
+            filter(n() >= 2) %>% 
+            ungroup(),
+          aes(color = NULL), 
+          alpha = 0.3, 
+          trim = FALSE
+        ) +
+        geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
+    } else {
+      p + 
+        geom_violin(
+          data = plot_df %>% 
+            group_by(group) %>% 
+            filter(n() >= 2) %>% 
+            ungroup(),
+          alpha = 0.3, 
+          trim = FALSE
+        ) +
+        geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
     }
-    
-    # Convert to plotly
-    ggplotly(p, tooltip = "text") %>%
-      layout(
-        font = list(family = "Manrope"),
-        hoverlabel = list(font = list(family = "Manrope")),
-        showlegend = TRUE,
-        margin = list(b = 100)
-      ) %>%
-      config(displayModeBar = TRUE)
-  })
+  } else {
+    p + 
+      geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
+  }
+  
+  # Add reference ranges if selected
+  if(input$show_ref && nrow(ref_range) > 0) {
+    if(!is.na(ref_range$testminrangevalue)) {
+      p <- p + geom_hline(
+        yintercept = ref_range$testminrangevalue,
+        linetype = "dashed", 
+        color = "grey50", 
+        alpha = 0.5
+      )
+    }
+    if(!is.na(ref_range$testmaxrangevalue)) {
+      p <- p + geom_hline(
+        yintercept = ref_range$testmaxrangevalue,
+        linetype = "dashed", 
+        color = "grey50", 
+        alpha = 0.5
+      )
+    }
+  }
+  
+  # Convert to plotly
+  ggplotly(p, tooltip = "text") %>%
+    layout(
+      font = list(family = "Manrope"),
+      hoverlabel = list(font = list(family = "Manrope")),
+      showlegend = TRUE,
+      margin = list(b = 100)
+    ) %>%
+    config(displayModeBar = TRUE)
+})
   
   # Age distribution plot
   output$age_distribution <- renderPlotly({
