@@ -1,7 +1,7 @@
 # server.R
 
 function(input, output, session) {
-  # Section 1: Core State Management and Setup -------------------------
+  # Section 1: Core State Management -------------------------
   
   # Initialize reactive values
   integration_state <- reactiveValues(
@@ -14,7 +14,16 @@ function(input, output, session) {
   custom_groups <- reactiveVal(list())
   integrated_datasets_rv <- reactiveVal(loadSavedDatasets())
   
-  # Core helper functions
+  # PCA state management
+  pca_state <- reactiveValues(
+    results = NULL,
+    selected_pc = NULL,
+    selected_params = NULL
+  )
+  
+  # Section 2: Core Helper Functions -------------------------
+  
+  # Get grouping variable
   get_group_var <- reactive({
     switch(input$grouping,
            "age" = "age_group",
@@ -27,21 +36,33 @@ function(input, output, session) {
   filtered_params <- reactive({
     req(input$selected_datasets)
     
-    if(!input$show_common_only || length(input$selected_datasets) <= 1) {
+    # Only show checkbox when multiple datasets are selected
+    if(length(input$selected_datasets) <= 1) {
+      return(param_choices)
+    }
+    
+    if(!input$show_common_only) {
       return(param_choices)
     }
     
     # Get current datasets
     datasets <- integrated_datasets_rv()
     
-    # Find common parameters across selected datasets
+    # Find common parameters
     common_params <- Reduce(intersect, 
       lapply(input$selected_datasets, function(ds) {
         names(datasets[[ds]])
       })
     )
     
-    param_choices[names(param_choices) %in% common_params]
+    # Filter to blood parameters only
+    common_blood_params <- common_params[common_params %in% blood_params]
+    
+    # Create named vector
+    setNames(
+      common_blood_params,
+      str_to_title(str_replace_all(common_blood_params, "_", " "))
+    )
   })
   
   # Data preparation function
@@ -50,52 +71,52 @@ function(input, output, session) {
     
     datasets <- integrated_datasets_rv()
     
-    message("Preparing plot data")
-    message("Selected datasets:", paste(input$selected_datasets, collapse=", "))
-    
-    plot_data <- tryCatch({
+    tryCatch({
+      # Combine datasets
       all_data <- lapply(input$selected_datasets, function(ds) {
-        if (ds %in% names(datasets)) {
+        if(ds %in% names(datasets)) {
           data <- datasets[[ds]]
-          message(paste("Processing dataset:", ds))
-          message(paste("Dimensions before filtering:", nrow(data), "x", ncol(data)))
           
+          # Filter by age groups
           filtered <- data %>%
-            filter(.data$age_group %in% input$selected_age_groups)
+            filter(age_group %in% input$selected_age_groups)
           
-          message(paste("Dimensions after filtering:", nrow(filtered), "x", ncol(filtered)))
+          # Apply custom groups if selected
+          if(input$grouping == "custom") {
+            filtered <- apply_custom_group(filtered, custom_groups())
+          }
+          
           return(filtered)
         } else {
-          message(paste("Dataset not found:", ds))
           return(NULL)
         }
       })
       
+      # Remove NULL entries and combine
       all_data <- all_data[!sapply(all_data, is.null)]
       
-      if(length(all_data) == 0) {
-        message("No valid datasets to combine")
-        return(NULL)
-      }
+      if(length(all_data) == 0) return(NULL)
       
-      combined_data <- bind_rows(all_data)
-      
-      message("Final combined dimensions:", nrow(combined_data), "x", ncol(combined_data))
-      message("Columns in combined data:", paste(names(combined_data), collapse=", "))
-      
-      return(combined_data)
-      
+      bind_rows(all_data)
     }, error = function(e) {
-      message("Error in prepare_plot_data: ", e$message)
-      return(NULL)
+      showNotification(paste("Error preparing data:", e$message), type = "error")
+      NULL
     })
-    
-    return(plot_data)
   })
-
-  # Section 2: Core UI Updates -------------------------
   
-  # Update parameter selection based on common parameters filter
+  # Section 3: UI Updates -------------------------
+  
+  # Show/hide common parameters checkbox
+  observe({
+    if(length(input$selected_datasets) > 1) {
+      shinyjs::show("show_common_only")
+    } else {
+      shinyjs::hide("show_common_only")
+      updateCheckboxInput(session, "show_common_only", value = FALSE)
+    }
+  })
+  
+  # Update parameter selection
   observe({
     updateSelectizeInput(session, "blood_param",
                         choices = filtered_params())
@@ -109,33 +130,21 @@ function(input, output, session) {
       paste(names(datasets), "Data")
     )
     
-    updateCheckboxGroupInput(session, "selected_datasets", 
-                           choices = choices,
-                           selected = names(datasets)[1])
-    
-    updateCheckboxGroupInput(session, "demo_datasets", 
-                           choices = choices,
-                           selected = names(datasets)[1])
-    
-    updateCheckboxGroupInput(session, "stats_datasets", 
-                           choices = choices,
-                           selected = names(datasets)[1])
-    
-    # Update dataset deletion choices
+    for(input_id in c("selected_datasets", "demo_datasets", "stats_datasets", "pca_datasets")) {
+      updateCheckboxGroupInput(session, input_id,
+                             choices = choices,
+                             selected = if(input_id == "pca_datasets") "BHARAT" else names(datasets)[1])
+    }
+  })
+  
+  # Update dataset deletion choices (only in Validation tab)
+  observe({
+    req(input$integration_tabs == "3")  # Only when in Validation tab
+    datasets <- integrated_datasets_rv()
     updateSelectInput(session, "dataset_to_delete",
                      choices = setdiff(names(datasets), "BHARAT"))
   })
   
-  # Template download handler
-  output$download_template <- downloadHandler(
-    filename = function() {
-      paste0("mapping_template_", format(Sys.time(), "%Y%m%d"), ".csv")
-    },
-    content = function(file) {
-      write.csv(generate_mapping_template(), file, row.names = FALSE)
-    }
-  )
-
   # Custom group management
   observeEvent(input$add_group, {
     req(input$group_name, input$group_ranges)
@@ -147,16 +156,18 @@ function(input, output, session) {
     
     # Get current groups while maintaining order
     current_groups <- custom_groups()
-    
-    # Add new group while preserving order
     current_groups[[input$group_name]] <- input$group_ranges
     custom_groups(current_groups)
     
     # Update UI
     updateTextInput(session, "group_name", value = "")
     updateSelectInput(session, "group_ranges", selected = character(0))
+  })
+  
+  # Update custom groups table
+  observe({
+    current_groups <- custom_groups()
     
-    # Update table
     output$current_groups <- renderDT({
       groups_df <- data.frame(
         Group = names(current_groups),
@@ -169,7 +180,7 @@ function(input, output, session) {
                   pageLength = 5,
                   lengthChange = FALSE,
                   searching = FALSE,
-                  order = list(0, 'asc')  # Order by first column ascending
+                  order = list(0, 'asc')
                 ))
     })
   })
@@ -184,52 +195,73 @@ function(input, output, session) {
     custom_groups(current_groups)
   })
   
-# Section 3: Plot Outputs -------------------------
+  # Template download handler
+  output$download_template <- downloadHandler(
+    filename = function() {
+      paste0("mapping_template_", format(Sys.time(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      write.csv(generate_mapping_template(), file, row.names = FALSE)
+    }
+  )
+
+  # Section 4: Plot Outputs -------------------------
+  
+  # Overview plots
+  output$total_samples_plot <- renderPlotly({
+    datasets <- integrated_datasets_rv()
+    
+    data <- map_df(names(datasets), ~{
+      data <- datasets[[.x]]
+      tibble(
+        Dataset = .x,
+        Samples = n_distinct(data$participant_id)
+      )
+    })
+    
+    p <- ggplot(data, aes(x = Dataset, y = Samples, fill = Dataset)) +
+      geom_bar(stat = "identity", alpha = 0.8) +
+      scale_fill_manual(values = dataset_colors) +
+      theme_minimal() +
+      theme(
+        text = element_text(family = "Manrope"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5)
+      ) +
+      labs(title = "Total Samples per Dataset")
+    
+    ggplotly(p)
+  })
   
   # Blood parameter visualization
   output$blood_dist <- renderPlotly({
     req(input$blood_param)
     
-    # Get plot data
     plot_df <- prepare_plot_data()
     req(plot_df)
     req(input$blood_param %in% names(plot_df))
     
-    # Get current variable and grouping
     current_var <- input$blood_param
     group_var <- get_group_var()
     
-    # Create plotting data with dataset tracking and proper group ordering
+    # Create plotting data
     plot_df <- plot_df %>%
       mutate(
         group = !!sym(group_var),
         y_val = !!sym(current_var),
-        point_color = if(input$color_by == "dataset") dataset else if(input$color_by != "none") !!sym(input$color_by) else group
+        point_color = case_when(
+          input$color_by == "dataset" ~ dataset,
+          input$color_by == "age" ~ as.character(age),
+          input$color_by != "none" ~ as.character(!!sym(input$color_by)),
+          TRUE ~ as.character(group)
+        )
       ) %>%
       drop_na(group, y_val)
     
-    # If using custom groups, set the factor levels based on order of creation
-    if(input$grouping == "custom" && !is.null(custom_groups())) {
-      plot_df$group <- factor(plot_df$group, levels = names(custom_groups()))
-    }
-    
-    # Get reference ranges if available
+    # Get reference ranges
     ref_range <- blood_metadata %>%
       filter(testname == str_replace_all(current_var, "_", "-")) %>%
       select(testminrangevalue, testmaxrangevalue)
-    
-    # Y-axis limits
-    y_min <- min(plot_df$y_val, na.rm = TRUE)
-    y_max <- max(plot_df$y_val, na.rm = TRUE)
-    
-    if(nrow(ref_range) > 0) {
-      if(!is.na(ref_range$testminrangevalue)) y_min <- min(y_min, ref_range$testminrangevalue)
-      if(!is.na(ref_range$testmaxrangevalue)) y_max <- max(y_max, ref_range$testmaxrangevalue)
-    }
-    
-    y_range <- y_max - y_min
-    y_min <- y_min - 0.05 * y_range
-    y_max <- y_max + 0.05 * y_range
     
     # Set up aesthetics
     aes_mapping <- aes(
@@ -240,14 +272,17 @@ function(input, output, session) {
         "ID:", participant_id,
         "\nValue:", round(y_val, 2),
         "\nGroup:", group,
-        "\nDataset:", dataset
+        "\nDataset:", dataset,
+        if(input$color_by == "age") paste("\nAge:", age) else ""
       )
     )
     
-    # Get colors based on grouping
+    # Get colors
     n_colors <- length(unique(plot_df$point_color))
     colors <- if(input$color_by == "dataset") {
       dataset_colors[unique(plot_df$dataset)]
+    } else if(input$color_by == "age") {
+      colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
     } else {
       get_color_palette(input$color_scheme, n_colors)
     }
@@ -257,102 +292,61 @@ function(input, output, session) {
       theme_minimal(base_size = 14) +
       theme(
         text = element_text(family = "Manrope"),
-        axis.title = element_text(family = "Manrope", size = 12),
         axis.text = element_text(family = "Manrope", size = 10),
         axis.text.x = element_text(angle = 45, hjust = 1),
         panel.grid.minor = element_blank(),
         legend.position = "right",
         plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 12),
         legend.title = element_text(size = 12),
         legend.text = element_text(size = 10)
       ) +
-      scale_color_manual(values = colors) +
       labs(
         title = str_to_title(str_replace_all(current_var, "_", " ")),
         x = str_to_title(str_replace_all(group_var, "_", " ")),
-        y = NULL,  # Remove y-axis label
+        y = NULL,
         color = str_to_title(str_replace_all(
-          if(input$color_by != "none") input$color_by else group_var, 
+          if(input$color_by == "age") "Age" else 
+            if(input$color_by != "none") input$color_by else group_var, 
           "_", " "
         ))
       )
     
-    # Add plot elements based on type with better group handling
-    p <- if(input$plot_type == "box") {
-      if(input$color_by != "none" && input$color_by != group_var) {
-        p + 
-          geom_boxplot(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            aes(color = NULL), 
-            alpha = 0.3, 
-            width = 0.7, 
-            outlier.shape = NA
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      } else {
-        p + 
-          geom_boxplot(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            alpha = 0.3, 
-            width = 0.7, 
-            outlier.shape = NA
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      }
-    } else if(input$plot_type == "violin") {
-      if(input$color_by != "none" && input$color_by != group_var) {
-        p + 
-          geom_violin(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            aes(color = NULL), 
-            alpha = 0.3, 
-            trim = FALSE
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      } else {
-        p + 
-          geom_violin(
-            data = plot_df %>% 
-              group_by(group) %>% 
-              filter(n() >= 2) %>% 
-              ungroup(),
-            alpha = 0.3, 
-            trim = FALSE
-          ) +
-          geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
-      }
+    # Add appropriate scale
+    if(input$color_by == "age") {
+      p <- p + scale_color_gradientn(colors = colors)
     } else {
-      p + 
-        geom_point(position = position_jitter(width = 0.2), alpha = 0.7, size = 3)
+      p <- p + scale_color_manual(values = colors)
     }
+    
+    # Add plot elements based on type
+    p <- switch(input$plot_type,
+      "box" = p + 
+        {if(input$color_by != "none" && input$color_by != group_var)
+          geom_boxplot(aes(color = NULL), alpha = 0.3, width = 0.7, outlier.shape = NA)
+        else
+          geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA)} +
+        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+      
+      "violin" = p + 
+        {if(input$color_by != "none" && input$color_by != group_var)
+          geom_violin(aes(color = NULL), alpha = 0.3, trim = FALSE)
+        else
+          geom_violin(alpha = 0.3, trim = FALSE)} +
+        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+      
+      # Default to scatter
+      p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
+    )
     
     # Add reference ranges if selected
     if(input$show_ref && nrow(ref_range) > 0) {
       if(!is.na(ref_range$testminrangevalue)) {
-        p <- p + geom_hline(
-          yintercept = ref_range$testminrangevalue,
-          linetype = "dashed", 
-          color = "grey50", 
-          alpha = 0.5
-        )
+        p <- p + geom_hline(yintercept = ref_range$testminrangevalue,
+                           linetype = "dashed", color = "grey50", alpha = 0.5)
       }
       if(!is.na(ref_range$testmaxrangevalue)) {
-        p <- p + geom_hline(
-          yintercept = ref_range$testmaxrangevalue,
-          linetype = "dashed", 
-          color = "grey50", 
-          alpha = 0.5
-        )
+        p <- p + geom_hline(yintercept = ref_range$testmaxrangevalue,
+                           linetype = "dashed", color = "grey50", alpha = 0.5)
       }
     }
     
@@ -367,39 +361,15 @@ function(input, output, session) {
       config(displayModeBar = TRUE)
   })
   
-  # Age distribution plot
+  # Demographic plots
   output$age_distribution <- renderPlotly({
-    req(input$demo_datasets, input$demo_age_groups)
-    
-    # Get current datasets
-    datasets <- integrated_datasets_rv()
-    
-    # Safely combine datasets
-    plot_data <- tryCatch({
-      combined_data <- bind_rows(!!!lapply(input$demo_datasets, function(ds) {
-        if (ds %in% names(datasets)) {
-          datasets[[ds]]
-        } else {
-          NULL
-        }
-      })) %>%
-        filter(.data$age_group %in% input$demo_age_groups)
-      
-      if (is.null(combined_data) || nrow(combined_data) == 0) {
-        return(NULL)
-      }
-      
-      combined_data
-    }, error = function(e) {
-      message("Error in age distribution plot: ", e$message)
-      NULL
-    })
-    
-    # Check if we have valid data
+    plot_data <- prepare_plot_data()
     req(plot_data)
-    req(nrow(plot_data) > 0)
     
-    # Create plot
+    if(input$grouping == "custom") {
+      plot_data <- apply_custom_group(plot_data, custom_groups())
+    }
+    
     p <- ggplot(plot_data, aes(x = age, fill = sex)) +
       geom_histogram(binwidth = 1, position = "stack", alpha = 0.7) +
       scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
@@ -417,46 +387,96 @@ function(input, output, session) {
     
     ggplotly(p)
   })
+
+  # Section 5: PCA Analysis -------------------------
   
-  # Age groups distribution
-  output$age_groups_dist <- renderPlotly({
-    req(length(input$demo_datasets) > 0, length(input$demo_age_groups) > 0)
+  # Perform PCA analysis
+  observe({
+    req(input$pca_datasets, input$pca_params)
     
+    # Get data
     datasets <- integrated_datasets_rv()
     
-    plot_data <- tryCatch({
-      combined_data <- bind_rows(!!!lapply(input$demo_datasets, function(ds) {
-        if (ds %in% names(datasets)) {
-          datasets[[ds]]
-        } else {
-          NULL
-        }
-      })) %>%
-        filter(.data$age_group %in% input$demo_age_groups) %>%
-        mutate(age_group = factor(age_group, 
-                               levels = c("18-29", "30-44", "45-59", "60-74", "75+")))
-      
-      if (is.null(combined_data) || nrow(combined_data) == 0) {
-        return(NULL)
-      }
-      
-      combined_data
-    }, error = function(e) {
-      message("Error in age groups distribution: ", e$message)
-      NULL
-    })
+    # Combine selected datasets
+    data <- bind_rows(lapply(input$pca_datasets, function(ds) datasets[[ds]]))
     
+    # Compute PCA
+    tryCatch({
+      pca_results <- compute_pca(data, input$pca_params, scale = TRUE)
+      pca_state$results <- pca_results
+      
+      # Update PC selection choices
+      n_pcs <- ncol(pca_results$scores)
+      pc_choices <- setNames(
+        paste0("PC", 1:n_pcs),
+        paste0("PC", 1:n_pcs, " (", round(pca_results$var_explained * 100, 1), "%)")
+      )
+      updateSelectInput(session, "pc_x", choices = pc_choices, selected = "PC1")
+      updateSelectInput(session, "pc_y", choices = pc_choices, selected = "PC2")
+      
+    }, error = function(e) {
+      showNotification(paste("Error in PCA:", e$message), type = "error")
+    })
+  })
+  
+  # PCA Score Plot
+  output$pca_scores <- renderPlotly({
+    req(pca_state$results, input$pc_x, input$pc_y)
+    
+    # Get data
+    scores_df <- as.data.frame(pca_state$results$scores)
+    plot_data <- prepare_plot_data()
     req(plot_data)
     
-    p <- ggplot(plot_data, aes(x = age_group, fill = sex)) +
-      geom_bar(position = "dodge", alpha = 0.7) +
-      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
+    # Add metadata
+    scores_df <- bind_cols(
+      scores_df,
+      plot_data %>% select(age, sex, age_group, dataset)
+    )
+    
+    # Create score plot
+    p <- ggplot(scores_df, 
+                aes_string(x = input$pc_x, y = input$pc_y, 
+                          color = input$pca_color)) +
+      geom_point(alpha = 0.7, size = 3) +
       theme_minimal() +
       labs(
-        title = "Distribution by Age Group and Gender",
-        x = "Age Group",
-        y = "Count",
-        fill = "Gender"
+        title = "PCA Score Plot",
+        color = str_to_title(input$pca_color)
+      ) +
+      theme(
+        text = element_text(family = "Manrope"),
+        plot.title = element_text(hjust = 0.5, face = "bold")
+      )
+    
+    # Add appropriate color scale
+    if(input$pca_color == "age") {
+      p <- p + scale_color_viridis_c()
+    } else if(input$pca_color == "dataset") {
+      p <- p + scale_color_manual(values = dataset_colors)
+    } else {
+      p <- p + scale_color_brewer(palette = "Set1")
+    }
+    
+    ggplotly(p)
+  })
+  
+  # Scree Plot
+  output$pca_scree <- renderPlotly({
+    req(pca_state$results)
+    
+    var_explained <- pca_state$results$var_explained
+    df <- data.frame(
+      PC = factor(paste0("PC", 1:length(var_explained))),
+      Variance = var_explained * 100
+    )
+    
+    p <- ggplot(df, aes(x = PC, y = Variance)) +
+      geom_bar(stat = "identity", fill = "#4682B4", alpha = 0.7) +
+      theme_minimal() +
+      labs(
+        title = "Scree Plot",
+        y = "Variance Explained (%)"
       ) +
       theme(
         text = element_text(family = "Manrope"),
@@ -467,31 +487,34 @@ function(input, output, session) {
     ggplotly(p)
   })
   
-  # Volcano plot comparison observer
-  observe({
-    req(input$stats_grouping)
+  # Loadings Plot
+  output$pca_loadings <- renderPlotly({
+    req(pca_state$results, input$selected_pc)
     
-    # Get the grouped data
-    plot_data <- prepare_plot_data()
-    req(plot_data)
+    # Get top loadings
+    loadings <- get_top_loadings(pca_state$results$loadings, 
+                                input$selected_pc, 
+                                n = input$n_loadings)
     
-    # Get groups based on selected grouping
-    groups <- switch(input$stats_grouping,
-      "age" = input$stats_age_groups,
-      "sex" = c("Male", "Female"),
-      "combined" = unique(plot_data$group_combined),
-      "custom" = names(custom_groups())
-    )
+    p <- ggplot(loadings, aes_string(x = "reorder(parameter, !!input$selected_pc)", 
+                                    y = input$selected_pc)) +
+      geom_bar(stat = "identity", fill = "#4682B4", alpha = 0.7) +
+      coord_flip() +
+      theme_minimal() +
+      labs(
+        title = paste("Top Loadings for", input$selected_pc),
+        x = "Parameter",
+        y = "Loading Value"
+      ) +
+      theme(
+        text = element_text(family = "Manrope"),
+        plot.title = element_text(hjust = 0.5, face = "bold")
+      )
     
-    # Generate pairwise combinations
-    if(length(groups) >= 2) {
-      comparisons <- utils::combn(groups, 2, paste, collapse=" vs ")
-      updateSelectInput(session, "volcano_comparison",
-                       choices = comparisons)
-    }
+    ggplotly(p)
   })
-
-  # Section 4: Data Integration Workflow -------------------------
+  
+  # Section 6: Data Integration Workflow -------------------------
   
   # Data preview handler
   observeEvent(input$preview_data, {
@@ -510,7 +533,6 @@ function(input, output, session) {
       })
       names(col_info) <- names(data)
       
-      # Update info UI
       output$data_info <- renderUI({
         div(
           h4("Dataset Information:"),
@@ -530,7 +552,6 @@ function(input, output, session) {
         )
       })
       
-      # Show preview
       output$data_preview <- renderDT({
         datatable(
           head(data, 100),
@@ -541,11 +562,7 @@ function(input, output, session) {
         )
       })
     }, error = function(e) {
-      showNotification(
-        paste("Error reading data:", e$message),
-        type = "error",
-        duration = NULL
-      )
+      showNotification(paste("Error reading data:", e$message), type = "error")
     })
   })
   
@@ -562,76 +579,10 @@ function(input, output, session) {
     current_datasets[[input$dataset_to_delete]] <- NULL
     integrated_datasets_rv(current_datasets)
     
-    # Save updated datasets
     saveDatasets(current_datasets)
-    
-    # Update UI
-    updateSelectInput(session, "dataset_to_delete",
-                     choices = setdiff(names(current_datasets), "BHARAT"))
     
     showNotification(paste("Deleted dataset:", input$dataset_to_delete), 
                     type = "message")
-  })
-  
-  # Mapping file handler
-  observeEvent(input$mapping_file, {
-    req(input$mapping_file)
-    
-    tryCatch({
-      mapping <- read_csv(input$mapping_file$datapath, show_col_types = FALSE)
-      integration_state$mapping <- mapping
-      
-      output$mapping_preview <- renderDT({
-        datatable(mapping, options = list(scrollX = TRUE, pageLength = 10))
-      })
-      
-      output$mapping_status <- renderUI({
-        div(class = "alert alert-success",
-            icon("check-circle"),
-            "Mapping file loaded successfully")
-      })
-    }, error = function(e) {
-      output$mapping_status <- renderUI({
-        div(class = "alert alert-danger",
-            icon("exclamation-circle"),
-            paste("Error loading mapping file:", e$message))
-      })
-    })
-  })
-  
-  # Validation handler
-  observeEvent(input$validate_integration, {
-    req(integration_state$external_data,
-        integration_state$mapping,
-        input$dataset_name)
-    
-    tryCatch({
-      processed_data <- process_external_data(
-        input$external_data$datapath,
-        integration_state$mapping,
-        input$dataset_name
-      )
-      
-      integration_state$processed_data <- processed_data
-      validation <- validate_dataset(processed_data)
-      integration_state$validation_result <- validation
-      
-      output$validation_status <- renderUI({
-        div(
-          class = if(validation$valid) "alert alert-success" else "alert alert-danger",
-          icon(if(validation$valid) "check-circle" else "exclamation-circle"),
-          validation$message
-        )
-      })
-    }, error = function(e) {
-      output$validation_status <- renderUI({
-        div(
-          class = "alert alert-danger",
-          icon("exclamation-circle"),
-          paste("Error processing data:", e$message)
-        )
-      })
-    })
   })
   
   # Integration handler
@@ -646,7 +597,6 @@ function(input, output, session) {
         current_datasets[[input$dataset_name]] <- integration_state$processed_data
         integrated_datasets_rv(current_datasets)
         
-        # Save datasets to persistent storage
         saveDatasets(current_datasets)
         
         showNotification(
@@ -685,4 +635,5 @@ function(input, output, session) {
         lengthChange = FALSE
       ))
   })
-}
+  
+} # End of server function

@@ -15,13 +15,14 @@ library(effsize)
 library(rstatix)
 library(showtext)
 library(sysfonts)
-library(shinyBS)  
+library(shinyBS)
+library(factoextra)
 
 # Add custom fonts
 font_add_google("Manrope", "Manrope")
 showtext_auto()
 
-# Data persistence functions
+#' Data persistence functions
 saveDatasets <- function(datasets, dir = "data/saved_datasets") {
   if(!dir.exists(dir)) dir.create(dir, recursive = TRUE)
   saveRDS(datasets, file.path(dir, "integrated_datasets.rds"))
@@ -36,7 +37,7 @@ loadSavedDatasets <- function(dir = "data/saved_datasets") {
   }
 }
 
-# Age group functions
+#' Age group functions
 standardize_age_group <- function(age) {
   case_when(
     age >= 18 & age <= 29 ~ "18-29",
@@ -48,18 +49,7 @@ standardize_age_group <- function(age) {
   )
 }
 
-create_age_groups <- function(age) {
-  case_when(
-    age >= 18 & age < 30 ~ "18-29",
-    age >= 30 & age < 45 ~ "30-44",
-    age >= 45 & age < 60 ~ "45-59",
-    age >= 60 & age < 75 ~ "60-74",
-    age >= 75 ~ "75+",
-    TRUE ~ NA_character_
-  )
-}
-
-# Custom grouping function
+#' Custom group functions
 apply_custom_group <- function(data, custom_groups) {
   if (length(custom_groups) == 0) {
     data$custom_group <- "No Groups Defined"
@@ -82,170 +72,149 @@ apply_custom_group <- function(data, custom_groups) {
     )
 }
 
-# Template generation function
-generate_mapping_template <- function() {
-  bharat_cols <- names(blood_data_with_demo)
-  template <- data.frame(
-    external_column = rep("", length(bharat_cols)),
-    bharat_column = bharat_cols,
-    data_type = sapply(blood_data_with_demo, function(x) class(x)[1]),
-    description = paste("Enter description for", bharat_cols),
-    required = ifelse(bharat_cols %in% c("participant_id", "age", "sex"), "Yes", "No")
-  )
+#' PCA Analysis Functions
+compute_pca <- function(data, selected_params, scale = TRUE) {
+  # Remove any non-numeric columns and NA values
+  numeric_data <- data %>%
+    select(all_of(selected_params)) %>%
+    drop_na()
   
-  # Ensure required columns appear first
-  template <- template %>%
-    arrange(desc(required), bharat_column)
-    
-  return(template)
+  # Perform PCA
+  pca_result <- prcomp(numeric_data, scale. = scale)
+  
+  # Calculate variance explained
+  var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+  
+  # Get loadings
+  loadings <- as.data.frame(pca_result$rotation)
+  
+  # Get scores
+  scores <- as.data.frame(pca_result$x)
+  
+  return(list(
+    pca = pca_result,
+    var_explained = var_explained,
+    loadings = loadings,
+    scores = scores
+  ))
 }
 
-# Color and visualization functions
+get_top_loadings <- function(loadings_df, pc, n = 10) {
+  loadings_df %>%
+    select(!!sym(pc)) %>%
+    mutate(parameter = rownames(loadings_df)) %>%
+    arrange(desc(abs(!!sym(pc)))) %>%
+    slice_head(n = n)
+}
+
+#' Data Processing Functions
+process_external_data <- function(data_path, mapping_df, dataset_name) {
+  tryCatch({
+    # Read external data
+    external_data <- read_csv(data_path, show_col_types = FALSE)
+    
+    # Get required column mappings
+    id_col <- mapping_df$external_column[mapping_df$bharat_column == "participant_id"]
+    age_col <- mapping_df$external_column[mapping_df$bharat_column == "age"]
+    sex_col <- mapping_df$external_column[mapping_df$bharat_column == "sex"]
+    
+    if(any(is.na(c(id_col, age_col, sex_col)))) {
+      stop("Missing required column mappings")
+    }
+    
+    # Process required columns
+    processed_data <- tibble(
+      participant_id = as.character(external_data[[id_col]]),
+      age = as.numeric(external_data[[age_col]]),
+      sex = factor(standardize_sex(external_data[[sex_col]]), levels = c("Male", "Female"))
+    ) %>%
+      mutate(
+        age_group = factor(standardize_age_group(age), 
+                          levels = c("18-29", "30-44", "45-59", "60-74", "75+")),
+        dataset = dataset_name,
+        group_combined = paste(age_group, sex)
+      )
+    
+    # Process remaining columns
+    for(i in seq_len(nrow(mapping_df))) {
+      ext_col <- mapping_df$external_column[i]
+      bharat_col <- mapping_df$bharat_column[i]
+      
+      if(!bharat_col %in% c("participant_id", "age", "sex") && 
+         !is.na(ext_col) && ext_col %in% names(external_data)) {
+        processed_data[[bharat_col]] <- convert_column(external_data[[ext_col]], 
+                                                     mapping_df$data_type[i])
+      }
+    }
+    
+    return(processed_data)
+  }, error = function(e) {
+    stop(paste("Error processing data:", e$message))
+  })
+}
+
+standardize_sex <- function(sex_values) {
+  sex_values <- str_trim(sex_values)
+  case_when(
+    str_to_lower(sex_values) %in% c("m", "male") ~ "Male",
+    str_to_lower(sex_values) %in% c("f", "female") ~ "Female",
+    TRUE ~ NA_character_
+  )
+}
+
+convert_column <- function(values, data_type) {
+  tryCatch({
+    switch(data_type,
+           "numeric" = as.numeric(str_remove_all(as.character(values), ",")),
+           "character" = as.character(values),
+           "factor" = as.factor(values),
+           "date" = as.Date(values),
+           values)
+  }, error = function(e) {
+    warning(paste("Error converting column:", e$message))
+    NA
+  })
+}
+
+#' Visualization Helper Functions
 get_color_palette <- function(scheme, n) {
   colors <- switch(scheme,
                   "zissou" = wes_palette("Zissou1"),
                   "darjeeling" = wes_palette("Darjeeling1"),
                   "royal" = wes_palette("Royal1"),
-                  wes_palette("Zissou1")  # default
-  )
+                  wes_palette("Zissou1"))
   
   if(n <= length(colors)) {
-    return(colors[1:n])
+    colors[1:n]
   } else {
     colorRampPalette(colors)(n)
   }
 }
 
-# Data validation and processing functions
-validate_dataset <- function(dataset) {
-  required_cols <- c("participant_id", "dataset", "age", "sex", "age_group")
-  missing_cols <- required_cols[!required_cols %in% names(dataset)]
-  
-  if (length(missing_cols) > 0) {
-    return(list(
-      valid = FALSE,
-      message = paste("Missing required columns:", paste(missing_cols, collapse = ", "))
-    ))
-  }
-  
-  if (any(duplicated(dataset$participant_id))) {
-    return(list(
-      valid = FALSE,
-      message = "Dataset contains duplicate participant IDs"
-    ))
-  }
-  
-  # Validate age groups
-  invalid_age_groups <- setdiff(unique(dataset$age_group), names(standard_age_groups))
-  if (length(invalid_age_groups) > 0) {
-    return(list(
-      valid = FALSE,
-      message = paste("Invalid age groups found:", paste(invalid_age_groups, collapse = ", "))
-    ))
-  }
-  
-  # Validate sex values
-  invalid_sex <- setdiff(unique(dataset$sex), c("Male", "Female"))
-  if (length(invalid_sex) > 0) {
-    return(list(
-      valid = FALSE,
-      message = paste("Invalid sex values found:", paste(invalid_sex, collapse = ", "))
-    ))
-  }
-  
-  return(list(valid = TRUE, message = "Dataset validation successful"))
+#' Statistical Analysis Functions
+calculate_group_statistics <- function(data, param, group_var) {
+  data %>%
+    group_by(!!sym(group_var)) %>%
+    summarise(
+      n = n(),
+      mean = mean(!!sym(param), na.rm = TRUE),
+      sd = sd(!!sym(param), na.rm = TRUE),
+      median = median(!!sym(param), na.rm = TRUE),
+      q1 = quantile(!!sym(param), 0.25, na.rm = TRUE),
+      q3 = quantile(!!sym(param), 0.75, na.rm = TRUE),
+      .groups = "drop"
+    )
 }
 
-process_external_data <- function(data_path, mapping_df, dataset_name) {
-  # Read external data
-  external_data <- read_csv(data_path, show_col_types = FALSE)
-  
-  # Get required column mappings
-  id_col <- mapping_df$external_column[mapping_df$bharat_column == "participant_id"]
-  age_col <- mapping_df$external_column[mapping_df$bharat_column == "age"]
-  sex_col <- mapping_df$external_column[mapping_df$bharat_column == "sex"]
-  
-  # Start with required columns
-  processed_data <- tibble(
-    participant_id = as.character(external_data[[id_col]]),
-    age = as.numeric(external_data[[age_col]])
-  )
-  
-  # Add age_group using standardize_age_group function
-  processed_data <- processed_data %>%
-    mutate(
-      age_group = standardize_age_group(age),
-      age_group = factor(age_group, levels = c("18-29", "30-44", "45-59", "60-74", "75+"))
-    )
-  
-  # Process sex with standardization
-  sex_values <- external_data[[sex_col]]
-  sex_values <- str_trim(sex_values)
-  sex_values <- case_when(
-    sex_values %in% c("M", "m", "Male", "MALE") ~ "Male",
-    sex_values %in% c("F", "f", "Female", "FEMALE") ~ "Female",
-    TRUE ~ NA_character_
-  )
-  
-  # Add processed columns
-  processed_data <- processed_data %>%
-    mutate(
-      sex = factor(sex_values, levels = c("Male", "Female")),
-      dataset = dataset_name,
-      group_combined = paste(age_group, sex)
-    )
-  
-  # Process remaining columns from mapping
-  for (i in 1:nrow(mapping_df)) {
-    ext_col <- mapping_df$external_column[i]
-    bharat_col <- mapping_df$bharat_column[i]
-    data_type <- mapping_df$data_type[i]
-    
-    # Skip already processed columns
-    if (bharat_col %in% c("participant_id", "age", "sex", "dataset", "age_group", "group_combined")) {
-      next
-    }
-    
-    if (ext_col %in% names(external_data)) {
-      tryCatch({
-        raw_values <- external_data[[ext_col]]
-        
-        converted_values <- switch(data_type,
-          "numeric" = {
-            nums <- str_remove_all(as.character(raw_values), ",")
-            as.numeric(nums)
-          },
-          "character" = as.character(raw_values),
-          "factor" = as.factor(raw_values),
-          "date" = as.Date(raw_values),
-          raw_values
-        )
-        
-        processed_data[[bharat_col]] <- converted_values
-        
-      }, error = function(e) {
-        warning(sprintf(
-          "Error converting column %s to %s. Sample values: %s. Error: %s",
-          ext_col, data_type, 
-          paste(head(raw_values), collapse = ", "),
-          e$message
-        ))
-        processed_data[[bharat_col]] <- NA
-      })
-    }
-  }
-  
-  return(processed_data)
-}
-
-# Load data
+# Load and process initial data
 personal_info <- read_csv("data/Personal Information.csv") %>%
   select(participant_id = Participant_ID, 
          age = age_years, 
          sex = gender) %>%
   mutate(
     participant_id = str_trim(participant_id),
-    age_group = standardize_age_group(age),
+    age_group = factor(standardize_age_group(age), 
+                      levels = c("18-29", "30-44", "45-59", "60-74", "75+")),
     sex = factor(sex, levels = c("Male", "Female"))
   )
 
@@ -263,7 +232,7 @@ blood_data_with_demo <- blood_data %>%
     group_combined = paste(age_group, sex)
   )
 
-# Define constants and choices
+# Constants and choices
 blood_params <- names(blood_data)[!names(blood_data) %in% 
                                    c("participant_id", "month")]
 param_choices <- setNames(
@@ -290,7 +259,8 @@ color_by_choices <- c(
   "None" = "none",
   "Age Groups" = "age_group",
   "Sex" = "sex",
-  "Dataset" = "dataset"
+  "Dataset" = "dataset",
+  "Age (continuous)" = "age"
 )
 
 color_schemes <- c(
