@@ -21,6 +21,12 @@ function(input, output, session) {
     selected_params = NULL
   )
   
+  # Group comparison state
+  group_comparison <- reactiveValues(
+    group1 = NULL,
+    group2 = NULL
+  )
+  
   # Section 2: Core Helper Functions -------------------------
   
   # Get grouping variable
@@ -36,12 +42,8 @@ function(input, output, session) {
   filtered_params <- reactive({
     req(input$selected_datasets)
     
-    # Only show checkbox when multiple datasets are selected
-    if(length(input$selected_datasets) <= 1) {
-      return(param_choices)
-    }
-    
-    if(!input$show_common_only) {
+    # Only filter if multiple datasets and checkbox is checked
+    if(length(input$selected_datasets) <= 1 || !input$show_common_only) {
       return(param_choices)
     }
     
@@ -109,9 +111,9 @@ function(input, output, session) {
   # Show/hide common parameters checkbox
   observe({
     if(length(input$selected_datasets) > 1) {
-      shinyjs::show("show_common_only")
+      shinyjs::show("common_params_div")
     } else {
-      shinyjs::hide("show_common_only")
+      shinyjs::hide("common_params_div")
       updateCheckboxInput(session, "show_common_only", value = FALSE)
     }
   })
@@ -130,20 +132,40 @@ function(input, output, session) {
       paste(names(datasets), "Data")
     )
     
-    for(input_id in c("selected_datasets", "demo_datasets", "stats_datasets", "pca_datasets")) {
-      updateCheckboxGroupInput(session, input_id,
+    input_ids <- c("selected_datasets", "demo_datasets", 
+                   "stats_datasets", "pca_datasets")
+    
+    for(id in input_ids) {
+      updateCheckboxGroupInput(session, id,
                              choices = choices,
-                             selected = if(input_id == "pca_datasets") "BHARAT" else names(datasets)[1])
+                             selected = if(id == "pca_datasets") "BHARAT" 
+                                      else names(datasets)[1])
     }
   })
   
-  # Update dataset deletion choices (only in Validation tab)
+  # Group selection updates for volcano plot
   observe({
-    req(input$integration_tabs == "3")  # Only when in Validation tab
-    datasets <- integrated_datasets_rv()
-    updateSelectInput(session, "dataset_to_delete",
-                     choices = setdiff(names(datasets), "BHARAT"))
+    req(input$stats_grouping)
+    
+    plot_data <- prepare_plot_data()
+    req(plot_data)
+    
+    choices <- switch(input$stats_grouping,
+      "age" = as.character(plot_data$age_group),
+      "sex" = as.character(plot_data$sex),
+      "combined" = unique(plot_data$group_combined),
+      "custom" = names(custom_groups()),
+      NULL
+    )
+    
+    if(!is.null(choices)) {
+      choices <- sort(unique(choices))
+      updateSelectInput(session, "group1_select", choices = choices)
+      updateSelectInput(session, "group2_select", choices = choices)
+    }
   })
+  
+  # Section 4: Custom Groups Management -------------------------
   
   # Custom group management
   observeEvent(input$add_group, {
@@ -195,19 +217,49 @@ function(input, output, session) {
     custom_groups(current_groups)
   })
   
-  # Template download handler
-  output$download_template <- downloadHandler(
-    filename = function() {
-      paste0("mapping_template_", format(Sys.time(), "%Y%m%d"), ".csv")
-    },
-    content = function(file) {
-      write.csv(generate_mapping_template(), file, row.names = FALSE)
-    }
-  )
-
-  # Section 4: Plot Outputs -------------------------
+  # Handle custom group modal triggers
+  observeEvent(input$show_group_modal, {
+    toggleModal(session, "groupModal", toggle = "show")
+  })
   
-  # Overview plots
+  observeEvent(input$show_group_modal_demo, {
+    toggleModal(session, "groupModal", toggle = "show")
+  })
+  
+  observeEvent(input$show_group_modal_stats, {
+    toggleModal(session, "groupModal", toggle = "show")
+  })
+
+  # Section 5: Overview Tab Outputs -------------------------
+  
+  # Overview statistics
+  output$dataset_stats <- renderUI({
+    datasets <- integrated_datasets_rv()
+    
+    total_samples <- sum(sapply(datasets, function(x) n_distinct(x$participant_id)))
+    total_params <- length(blood_params)
+    
+    # Age range across all datasets
+    all_ages <- do.call(c, lapply(datasets, function(x) x$age))
+    age_range <- sprintf("%d-%d", floor(min(all_ages)), ceiling(max(all_ages)))
+    
+    # Gender distribution
+    all_sex <- do.call(c, lapply(datasets, function(x) x$sex))
+    sex_dist <- table(all_sex)
+    
+    tagList(
+      div(class = "info-box",
+          h4("Dataset Summary"),
+          p(sprintf("Total Samples: %d", total_samples)),
+          p(sprintf("Parameters: %d", total_params)),
+          p(sprintf("Age Range: %s years", age_range)),
+          p(sprintf("Gender Distribution: %d Male, %d Female", 
+                   sex_dist["Male"], sex_dist["Female"]))
+      )
+    )
+  })
+  
+  # Total samples plot
   output$total_samples_plot <- renderPlotly({
     datasets <- integrated_datasets_rv()
     
@@ -233,30 +285,191 @@ function(input, output, session) {
     ggplotly(p)
   })
   
+  # Dataset overview table
+  output$overview_datasets_table <- renderDT({
+    datasets <- integrated_datasets_rv()
+    
+    map_df(names(datasets), ~{
+      data <- datasets[[.x]]
+      tibble(
+        Dataset = .x,
+        `Total Samples` = n_distinct(data$participant_id),
+        `Age Range` = sprintf("%d-%d", floor(min(data$age)), ceiling(max(data$age))),
+        `Male` = sum(data$sex == "Male"),
+        `Female` = sum(data$sex == "Female"),
+        Parameters = ncol(data) - 6  # Subtract metadata columns
+      )
+    }) %>%
+      datatable(options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+        dom = 'tp'
+      ))
+  })
+  
+  # Section 6: Blood Parameter Visualization -------------------------
+  
   # Blood parameter visualization
   output$blood_dist <- renderPlotly({
-    req(input$blood_param)
+    req(input$blood_param, input$grouping, input$color_by)
     
+    # Get data
     plot_df <- prepare_plot_data()
     req(plot_df)
-    req(input$blood_param %in% names(plot_df))
     
+    # Check if selected parameter is available
+    if(!input$blood_param %in% names(plot_df)) {
+      return(ggplotly(ggplot() + 
+        annotate("text", x = 0.5, y = 0.5, 
+                label = "Selected parameter not available in current dataset selection",
+                size = 6) +
+        theme_void()))
+    }
+    
+    # Get current variable
     current_var <- input$blood_param
-    group_var <- get_group_var()
     
-    # Create plotting data
+    # Determine group variable
+    group_var <- switch(input$grouping,
+      "age" = "age_group",
+      "sex" = "sex",
+      "combined" = "group_combined",
+      "custom" = "custom_group",
+      "custom_combined" = "custom_group_sex",
+      "age_group"  # default case
+    )
+    
+    # Apply custom grouping if needed
+    if(input$grouping %in% c("custom", "custom_combined")) {
+      plot_df <- apply_custom_group(plot_df, custom_groups())
+      if(nrow(plot_df) == 0) {
+        return(ggplotly(ggplot() + 
+          annotate("text", x = 0.5, y = 0.5, 
+                  label = "No data available for the selected custom groups",
+                  size = 6) +
+          theme_void()))
+      }
+    }
+    
+    # Prepare data for plotting
     plot_df <- plot_df %>%
       mutate(
-        group = !!sym(group_var),
+        group = factor(!!sym(group_var)),  # Ensure group is a factor
         y_val = !!sym(current_var),
         point_color = case_when(
           input$color_by == "dataset" ~ dataset,
-          input$color_by == "age" ~ as.character(age),
-          input$color_by != "none" ~ as.character(!!sym(input$color_by)),
-          TRUE ~ as.character(group)
+          input$color_by == "age_group" ~ as.character(age_group),
+          input$color_by == "sex" ~ as.character(sex),
+          input$color_by == "age" ~ as.character(round(age)),
+          TRUE ~ as.character(!!sym(group_var))
         )
       ) %>%
       drop_na(group, y_val)
+    
+    # Check if we have any data after filtering
+    if(nrow(plot_df) == 0) {
+      return(ggplotly(ggplot() + 
+        annotate("text", x = 0.5, y = 0.5, 
+                label = "No data available for the current selection",
+                size = 6) +
+        theme_void()))
+    }
+    
+    # Set up aesthetics
+    aes_mapping <- aes(
+      x = group, 
+      y = y_val,
+      color = point_color,
+      text = paste(
+        "ID:", participant_id,
+        "\nValue:", round(y_val, 2),
+        "\nGroup:", group,
+        "\nDataset:", dataset,
+        if(input$color_by == "age") paste("\nAge:", age) else ""
+      )
+    )
+    
+    # Get colors
+    n_colors <- length(unique(plot_df$point_color))
+    colors <- if(input$color_by == "dataset") {
+      dataset_colors[unique(plot_df$dataset)]
+    } else if(input$color_by == "age") {
+      colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
+    } else {
+      get_color_palette(input$color_scheme, n_colors)
+    }
+    
+    # Create base plot
+    p <- ggplot(plot_df, aes_mapping) +
+      theme_minimal(base_size = 14) +
+      theme(
+        text = element_text(family = "sans-serif"),
+        axis.text = element_text(family = "sans-serif", size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold", family = "sans-serif"),
+        legend.title = element_text(size = 12, family = "sans-serif"),
+        legend.text = element_text(size = 10, family = "sans-serif")
+      ) +
+      labs(
+        title = str_to_title(str_replace_all(current_var, "_", " ")),
+        x = str_to_title(str_replace_all(group_var, "_", " ")),
+        y = NULL,
+        color = str_to_title(str_replace_all(
+          if(input$color_by == "age") "Age" else 
+            if(input$color_by != "none") input$color_by else group_var, 
+          "_", " "
+        ))
+      )
+    
+    # Add appropriate scale
+    if(input$color_by == "age") {
+      p <- p + scale_color_gradientn(colors = colors)
+    } else {
+      p <- p + scale_color_manual(values = colors)
+    }
+    
+    # Add plot elements based on type
+    p <- switch(input$plot_type,
+      "box" = p + 
+        {if(input$color_by != "none" && input$color_by != group_var)
+          geom_boxplot(aes(color = NULL), alpha = 0.3, width = 0.7, outlier.shape = NA)
+        else
+          geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA)} +
+        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+      
+      "violin" = p + 
+        {if(input$color_by != "none" && input$color_by != group_var)
+          geom_violin(aes(fill = NULL), alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))
+        else
+          geom_violin(alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))} +
+        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+      
+      # Default to scatter
+      p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
+    )
+    
+    # Add statistics if requested
+    if(input$show_stats) {
+      # Perform ANOVA
+      aov_result <- aov(y_val ~ group, data = plot_df)
+      tukey_result <- TukeyHSD(aov_result)
+      
+      # Format p-values for display
+      p_values <- data.frame(comparison = rownames(tukey_result$group),
+                            p.adj = tukey_result$group[,"p adj"]) %>%
+        mutate(
+          significance = case_when(
+            p.adj < 0.001 ~ "***",
+            p.adj < 0.01 ~ "**",
+            p.adj < 0.05 ~ "*",
+            TRUE ~ "ns"
+          ),
+          y_pos = max(plot_df$y_val) + 
+            seq(0, length(comparison)-1) * diff(range(plot_df$y_val))/20
+        )
+    }
     
     # Get reference ranges
     ref_range <- blood_metadata %>%
@@ -291,14 +504,14 @@ function(input, output, session) {
     p <- ggplot(plot_df, aes_mapping) +
       theme_minimal(base_size = 14) +
       theme(
-        text = element_text(family = "Manrope"),
-        axis.text = element_text(family = "Manrope", size = 10),
+        text = element_text(family = "sans-serif"),
+        axis.text = element_text(family = "sans-serif", size = 12),
         axis.text.x = element_text(angle = 45, hjust = 1),
         panel.grid.minor = element_blank(),
         legend.position = "right",
-        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
-        legend.title = element_text(size = 12),
-        legend.text = element_text(size = 10)
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold", family = "sans-serif"),
+        legend.title = element_text(size = 12, family = "sans-serif"),
+        legend.text = element_text(size = 10, family = "sans-serif")
       ) +
       labs(
         title = str_to_title(str_replace_all(current_var, "_", " ")),
@@ -329,14 +542,80 @@ function(input, output, session) {
       
       "violin" = p + 
         {if(input$color_by != "none" && input$color_by != group_var)
-          geom_violin(aes(color = NULL), alpha = 0.3, trim = FALSE)
+          geom_violin(aes(fill = NULL), alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))
         else
-          geom_violin(alpha = 0.3, trim = FALSE)} +
+          geom_violin(alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))} +
         geom_jitter(width = 0.2, alpha = 0.7, size = 3),
       
       # Default to scatter
       p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
     )
+    
+    # Add statistics if requested
+    if(input$show_stats && exists("p_values")) {
+      # Add significance bars
+      for(i in seq_len(nrow(p_values))) {
+        groups <- strsplit(as.character(p_values$comparison[i]), "-")[[1]]
+        x1 <- which(levels(plot_df$group) == groups[1])
+        x2 <- which(levels(plot_df$group) == groups[2])
+        
+        if(p_values$significance[i] != "ns") {
+          p <- p + 
+            annotate("segment",
+                    x = x1, xend = x2,
+                    y = p_values$y_pos[i], yend = p_values$y_pos[i],
+                    color = "black") +
+            annotate("text",
+                    x = mean(c(x1, x2)), 
+                    y = p_values$y_pos[i],
+                    label = p_values$significance[i],
+                    vjust = -0.5)
+        }
+      }
+    }
+    
+    # Add stats box if requested
+    if(input$show_stats) {
+      stats_summary <- plot_df %>%
+        group_by(group) %>%
+        summarise(
+          n = n(),
+          mean = mean(y_val, na.rm = TRUE),
+          sd = sd(y_val, na.rm = TRUE),
+          se = sd/sqrt(n),
+          ci_lower = mean - qt(0.975, n-1)*se,
+          ci_upper = mean + qt(0.975, n-1)*se,
+          .groups = "drop"
+        )
+      
+      # Add ANOVA results
+      anova_results <- summary(aov_result)
+      
+      stats_text <- sprintf(
+        "Statistics Summary:\n\nANOVA: F(%d,%d) = %.2f, p = %.3e\n\n",
+        anova_results[[1]]$Df[1], anova_results[[1]]$Df[2],
+        anova_results[[1]]$`F value`[1], anova_results[[1]]$`Pr(>F)`[1]
+      )
+      
+      # Add group summaries
+      stats_text <- paste0(stats_text, "Group Summaries:\n",
+                          paste(apply(stats_summary, 1, function(x) {
+                            sprintf("%s: n=%d, mean=%.2f, SD=%.2f, 95%%CI=[%.2f,%.2f]",
+                                  as.character(x["group"]), 
+                                  as.integer(x["n"]), 
+                                  as.numeric(x["mean"]), 
+                                  as.numeric(x["sd"]),
+                                  as.numeric(x["ci_lower"]), 
+                                  as.numeric(x["ci_upper"]))
+                          }), collapse = "\n"))
+      
+      p <- p + 
+        annotate("text",
+                x = Inf, y = -Inf,
+                label = stats_text,
+                hjust = 1, vjust = 0,
+                size = 3, family = "sans-serif")
+    }
     
     # Add reference ranges if selected
     if(input$show_ref && nrow(ref_range) > 0) {
@@ -353,112 +632,311 @@ function(input, output, session) {
     # Convert to plotly
     ggplotly(p, tooltip = "text") %>%
       layout(
-        font = list(family = "Manrope"),
-        hoverlabel = list(font = list(family = "Manrope")),
+        font = list(family = "sans-serif"),
+        hoverlabel = list(font = list(family = "sans-serif")),
         showlegend = TRUE,
         margin = list(b = 100)
       ) %>%
       config(displayModeBar = TRUE)
   })
   
-  # Demographic plots
-  output$age_distribution <- renderPlotly({
-    plot_data <- prepare_plot_data()
-    req(plot_data)
+  # Section 7: Demographic Plots -------------------------
+  
+  # Demographics data preparation
+  demographics_data <- reactive({
+    req(input$demo_datasets)
     
-    if(input$grouping == "custom") {
-      plot_data <- apply_custom_group(plot_data, custom_groups())
+    # Get current datasets
+    datasets <- integrated_datasets_rv()
+    selected_data <- datasets[input$demo_datasets]
+    
+    # Combine selected datasets
+    combined_data <- bind_rows(selected_data) %>%
+      mutate(
+        age = as.numeric(age),
+        age_group = factor(age_group, levels = c("18-29", "30-44", "45-59", "60-74", "75+")),
+        sex = factor(sex, levels = c("Male", "Female"))
+      )
+    
+    # Filter by age groups if selected
+    if(!is.null(input$demo_age_groups) && length(input$demo_age_groups) > 0) {
+      combined_data <- combined_data %>% 
+        filter(age_group %in% input$demo_age_groups)
     }
     
+    combined_data
+  })
+  
+  # Age distribution plot
+  output$age_distribution <- renderPlotly({
+    plot_data <- demographics_data()
+    req(plot_data)
+    
+    # Check if we have any data
+    if(nrow(plot_data) == 0) {
+      return(ggplotly(ggplot() + 
+        annotate("text", x = 0.5, y = 0.5, 
+                label = "No data available for the current selection",
+                size = 6) +
+        theme_void()))
+    }
+    
+    # Create histogram
     p <- ggplot(plot_data, aes(x = age, fill = sex)) +
-      geom_histogram(binwidth = 1, position = "stack", alpha = 0.7) +
+      geom_histogram(binwidth = 1, position = "stack", alpha = 0.7,
+                    aes(text = paste(
+                      "Age:", age,
+                      "\nSex:", sex,
+                      "\nCount:", after_stat(count)
+                    ))) +
       scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
       theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, face = "bold")
+      ) +
       labs(
         title = "Age Distribution by Gender",
         x = "Age (years)",
         y = "Count",
         fill = "Gender"
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5, face = "bold")
       )
     
-    ggplotly(p)
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        showlegend = TRUE,
+        legend = list(x = 1.05, y = 0.5),
+        margin = list(r = 100)
+      )
   })
-
-  # Section 5: PCA Analysis -------------------------
+  
+  # Age groups distribution plot
+  output$age_groups_dist <- renderPlotly({
+    plot_data <- demographics_data()
+    req(plot_data)
+    
+    # Check if we have any data
+    if(nrow(plot_data) == 0) {
+      return(ggplotly(ggplot() + 
+        annotate("text", x = 0.5, y = 0.5, 
+                label = "No data available for the current selection",
+                size = 6) +
+        theme_void()))
+    }
+    
+    # Create bar plot
+    p <- ggplot(plot_data, aes(x = age_group, fill = sex)) +
+      geom_bar(position = "dodge", alpha = 0.7,
+               aes(text = paste(
+                 "Age Group:", age_group,
+                 "\nSex:", sex,
+                 "\nCount:", after_stat(count)
+               ))) +
+      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
+      theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      ) +
+      labs(
+        title = "Distribution by Age Group and Gender",
+        x = "Age Group",
+        y = "Count",
+        fill = "Gender"
+      )
+    
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        showlegend = TRUE,
+        legend = list(x = 1.05, y = 0.5),
+        margin = list(r = 100)
+      )
+  })
+  
+  # Section 8: PCA Analysis -------------------------
   
   # Perform PCA analysis
-  observe({
-    req(input$pca_datasets, input$pca_params)
+  observeEvent(input$pca_datasets, {
+    req(input$pca_datasets)
     
     # Get data
     datasets <- integrated_datasets_rv()
+    selected_data <- datasets[input$pca_datasets]
     
-    # Combine selected datasets
-    data <- bind_rows(lapply(input$pca_datasets, function(ds) datasets[[ds]]))
+    # Find common numeric parameters across all selected datasets
+    common_params <- Reduce(intersect, 
+                          lapply(selected_data, function(x) {
+                            names(x)[sapply(x, is.numeric)]
+                          }))
+    param_cols <- setdiff(common_params, c("age", "month"))
+    
+    # Show number of parameters
+    showNotification(
+      sprintf("Found %d common parameters across datasets", length(param_cols)),
+      type = "message"
+    )
+    
+    # Combine datasets and prepare data
+    combined_data <- bind_rows(lapply(names(selected_data), function(ds) {
+      data <- selected_data[[ds]]
+      data$dataset <- ds  # Add dataset identifier
+      data
+    }))
+    
+    # Update color by choices with parameters
+    updateSelectInput(session, "pca_color",
+                     choices = c(
+                       "Dataset" = "dataset",
+                       "Age Groups" = "age_group",
+                       "Sex" = "sex",
+                       "Age" = "age",
+                       setNames(param_cols, str_to_title(str_replace_all(param_cols, "_", " ")))
+                     ))
     
     # Compute PCA
     tryCatch({
-      pca_results <- compute_pca(data, input$pca_params, scale = TRUE)
-      pca_state$results <- pca_results
+      # Remove rows with any NA in parameter columns
+      complete_data <- combined_data %>%
+        drop_na(all_of(param_cols))
+      
+      if(nrow(complete_data) == 0) {
+        showNotification("No complete cases found for PCA analysis", type = "error")
+        return(NULL)
+      }
+      
+      # Store metadata separately
+      metadata <- complete_data %>%
+        select(participant_id, dataset, age, sex, age_group)
+      
+      # Perform PCA on parameter columns only
+      pca_data <- complete_data %>%
+        select(all_of(param_cols)) %>%
+        scale()  # Scale the data before PCA
+      
+      # Compute PCA
+      pca_results <- prcomp(pca_data, scale. = FALSE)  # Already scaled
+      
+      # Format results
+      formatted_results <- list(
+        scores = pca_results$x,
+        loadings = pca_results$rotation,
+        var_explained = pca_results$sdev^2 / sum(pca_results$sdev^2),
+        pca_obj = pca_results
+      )
+      
+      # Store results and metadata
+      pca_state$results <- formatted_results
+      pca_state$metadata <- metadata
+      pca_state$common_params <- param_cols
       
       # Update PC selection choices
-      n_pcs <- ncol(pca_results$scores)
+      n_pcs <- ncol(formatted_results$scores)
       pc_choices <- setNames(
         paste0("PC", 1:n_pcs),
-        paste0("PC", 1:n_pcs, " (", round(pca_results$var_explained * 100, 1), "%)")
+        paste0("PC", 1:n_pcs, " (", round(formatted_results$var_explained * 100, 1), "%)")
       )
       updateSelectInput(session, "pc_x", choices = pc_choices, selected = "PC1")
       updateSelectInput(session, "pc_y", choices = pc_choices, selected = "PC2")
+      updateSelectInput(session, "selected_pc", choices = pc_choices, selected = "PC1")
+      
+      # Show success message with details
+      showNotification(sprintf(
+        "PCA computed successfully with %d samples (%s) using %d common parameters", 
+        nrow(complete_data),
+        paste(sapply(unique(metadata$dataset), function(ds) {
+          sprintf("%s: %d", ds, sum(metadata$dataset == ds))
+        }), collapse = ", "),
+        length(param_cols)
+      ), type = "message")
       
     }, error = function(e) {
       showNotification(paste("Error in PCA:", e$message), type = "error")
     })
-  })
+  }, ignoreInit = FALSE)
   
   # PCA Score Plot
   output$pca_scores <- renderPlotly({
-    req(pca_state$results, input$pc_x, input$pc_y)
+    req(pca_state$results, pca_state$metadata, input$pc_x, input$pc_y, input$pca_color)
     
-    # Get data
+    # Get scores and metadata
     scores_df <- as.data.frame(pca_state$results$scores)
-    plot_data <- prepare_plot_data()
-    req(plot_data)
+    metadata <- pca_state$metadata
     
-    # Add metadata
-    scores_df <- bind_cols(
-      scores_df,
-      plot_data %>% select(age, sex, age_group, dataset)
-    )
+    # Combine scores with metadata
+    plot_data <- bind_cols(scores_df, metadata) %>%
+      mutate(dataset = factor(dataset))  # Ensure dataset is a factor
     
-    # Create score plot
-    p <- ggplot(scores_df, 
-                aes_string(x = input$pc_x, y = input$pc_y, 
-                          color = input$pca_color)) +
-      geom_point(alpha = 0.7, size = 3) +
-      theme_minimal() +
-      labs(
-        title = "PCA Score Plot",
-        color = str_to_title(input$pca_color)
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5, face = "bold")
-      )
+    # Get variance explained for axis labels
+    var_exp <- pca_state$results$var_explained
     
-    # Add appropriate color scale
-    if(input$pca_color == "age") {
-      p <- p + scale_color_viridis_c()
-    } else if(input$pca_color == "dataset") {
-      p <- p + scale_color_manual(values = dataset_colors)
+    # Create color mapping
+    if(input$pca_color %in% pca_state$common_params) {
+      # For numeric parameters
+      color_values <- plot_data[[input$pca_color]]
+      color_title <- str_to_title(str_replace_all(input$pca_color, "_", " "))
+      color_scale <- scale_color_viridis_c()
     } else {
-      p <- p + scale_color_brewer(palette = "Set1")
+      # For categorical variables
+      color_values <- plot_data[[input$pca_color]]
+      color_title <- str_to_title(str_replace_all(input$pca_color, "_", " "))
+      
+      if(input$pca_color == "dataset") {
+        # Create a subset of dataset colors for only the selected datasets
+        selected_datasets <- unique(plot_data$dataset)
+        dataset_colors_subset <- dataset_colors[as.character(selected_datasets)]
+        color_scale <- scale_color_manual(values = dataset_colors_subset)
+      } else if(input$pca_color == "age") {
+        color_scale <- scale_color_viridis_c()
+      } else {
+        # Get unique values for proper color mapping
+        unique_values <- unique(color_values)
+        n_colors <- length(unique_values)
+        color_palette <- brewer.pal(max(3, min(9, n_colors)), "Set1")
+        if(n_colors > 9) color_palette <- colorRampPalette(color_palette)(n_colors)
+        color_scale <- scale_color_manual(values = setNames(color_palette, unique_values))
+      }
     }
     
-    ggplotly(p)
+    # Create score plot
+    p <- ggplot(plot_data, 
+                aes(x = !!sym(input$pc_x), 
+                    y = !!sym(input$pc_y),
+                    color = color_values,
+                    text = paste(
+                      "ID:", participant_id,
+                      "\nDataset:", dataset,
+                      "\nAge:", age,
+                      "\nSex:", sex,
+                      "\nAge Group:", age_group,
+                      if(input$pca_color %in% pca_state$common_params)
+                        paste("\n", color_title, ":", round(color_values, 2))
+                      else
+                        paste("\n", color_title, ":", color_values)
+                    ))) +
+      geom_point(alpha = 0.7, size = 3) +
+      theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        legend.position = "right"
+      ) +
+      labs(
+        title = "PCA Score Plot",
+        x = sprintf("%s (%.1f%% explained var.)", input$pc_x, var_exp[as.numeric(gsub("PC", "", input$pc_x))] * 100),
+        y = sprintf("%s (%.1f%% explained var.)", input$pc_y, var_exp[as.numeric(gsub("PC", "", input$pc_y))] * 100),
+        color = color_title
+      ) +
+      color_scale
+    
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        showlegend = TRUE,
+        legend = list(x = 1.05, y = 0.5),
+        margin = list(r = 100),
+        hoverlabel = list(font = list(family = "sans-serif"))
+      ) %>%
+      config(displayModeBar = TRUE)
   })
   
   # Scree Plot
@@ -467,21 +945,22 @@ function(input, output, session) {
     
     var_explained <- pca_state$results$var_explained
     df <- data.frame(
-      PC = factor(paste0("PC", 1:length(var_explained))),
+      PC = factor(paste0("PC", 1:length(var_explained)), 
+                 levels = paste0("PC", 1:length(var_explained))),  # Force correct ordering
       Variance = var_explained * 100
     )
     
     p <- ggplot(df, aes(x = PC, y = Variance)) +
       geom_bar(stat = "identity", fill = "#4682B4", alpha = 0.7) +
       theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      ) +
       labs(
         title = "Scree Plot",
         y = "Variance Explained (%)"
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        axis.text.x = element_text(angle = 45, hjust = 1)
       )
     
     ggplotly(p)
@@ -489,32 +968,79 @@ function(input, output, session) {
   
   # Loadings Plot
   output$pca_loadings <- renderPlotly({
-    req(pca_state$results, input$selected_pc)
+    req(pca_state$results, input$selected_pc, input$n_loadings)
     
-    # Get top loadings
-    loadings <- get_top_loadings(pca_state$results$loadings, 
-                                input$selected_pc, 
-                                n = input$n_loadings)
+    # Get loadings for selected PC
+    pc_num <- as.numeric(gsub("PC", "", input$selected_pc))
+    loadings <- pca_state$results$loadings[, pc_num]
     
-    p <- ggplot(loadings, aes_string(x = "reorder(parameter, !!input$selected_pc)", 
-                                    y = input$selected_pc)) +
-      geom_bar(stat = "identity", fill = "#4682B4", alpha = 0.7) +
-      coord_flip() +
-      theme_minimal() +
-      labs(
-        title = paste("Top Loadings for", input$selected_pc),
-        x = "Parameter",
-        y = "Loading Value"
-      ) +
-      theme(
-        text = element_text(family = "Manrope"),
-        plot.title = element_text(hjust = 0.5, face = "bold")
+    # Create data frame with parameter names and loadings
+    loadings_df <- data.frame(
+      parameter = rownames(pca_state$results$loadings),
+      loading = loadings
+    ) %>%
+      arrange(desc(abs(loading))) %>%
+      head(input$n_loadings) %>%
+      mutate(
+        param_name = str_to_title(str_replace_all(parameter, "_", " ")),
+        direction = ifelse(loading > 0, "Positive", "Negative")
       )
     
-    ggplotly(p)
+    # Create loadings plot
+    p <- ggplot(loadings_df, 
+                aes(x = reorder(param_name, abs(loading)),
+                    y = loading,
+                    fill = direction,
+                    text = paste(
+                      "Parameter:", param_name,
+                      "\nLoading:", round(loading, 3)
+                    ))) +
+      geom_bar(stat = "identity", alpha = 0.7) +
+      scale_fill_manual(values = c("Positive" = "#4CAF50", "Negative" = "#FF5722")) +
+      coord_flip() +
+      theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        legend.position = "right"
+      ) +
+      labs(
+        title = paste("Top", input$n_loadings, "Loadings for", input$selected_pc),
+        x = "Parameter",
+        y = "Loading Value",
+        fill = "Direction"
+      )
+    
+    ggplotly(p, tooltip = "text") %>%
+      layout(
+        margin = list(l = 150),  # Increase left margin for parameter names
+        showlegend = TRUE
+      )
   })
   
-  # Section 6: Data Integration Workflow -------------------------
+  # Add variable quality table
+  output$var_quality <- renderDT({
+    req(pca_state$results)
+    
+    var_quality <- assess_var_quality(pca_state$results)
+    
+    datatable(var_quality,
+              options = list(pageLength = 10, scrollX = TRUE)) %>%
+      formatRound("total_cos2", digits = 3) %>%
+      formatStyle(
+        'quality',
+        backgroundColor = styleEqual(
+          c("High", "Medium", "Low"),
+          c('#4CAF50', '#FFC107', '#FF5722')
+        ),
+        color = styleEqual(
+          c("High", "Medium", "Low"),
+          c('white', 'black', 'white')
+        )
+      )
+  })
+  
+  # Section 9: Data Integration Workflow -------------------------
   
   # Data preview handler
   observeEvent(input$preview_data, {
@@ -533,6 +1059,7 @@ function(input, output, session) {
       })
       names(col_info) <- names(data)
       
+      # Update info UI
       output$data_info <- renderUI({
         div(
           h4("Dataset Information:"),
@@ -552,6 +1079,7 @@ function(input, output, session) {
         )
       })
       
+      # Show preview
       output$data_preview <- renderDT({
         datatable(
           head(data, 100),
@@ -563,6 +1091,135 @@ function(input, output, session) {
       })
     }, error = function(e) {
       showNotification(paste("Error reading data:", e$message), type = "error")
+    })
+  })
+  
+  # Template download handler
+  output$download_template <- downloadHandler(
+    filename = function() {
+      paste0("mapping_template_", format(Sys.time(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      write.csv(generate_mapping_template(), file, row.names = FALSE)
+    }
+  )
+  
+  # Mapping file handler
+  observeEvent(input$mapping_file, {
+    req(input$mapping_file)
+    
+    tryCatch({
+      mapping <- read_csv(input$mapping_file$datapath, show_col_types = FALSE)
+      integration_state$mapping <- mapping
+      
+      output$mapping_preview <- renderDT({
+        datatable(mapping, options = list(scrollX = TRUE, pageLength = 10))
+      })
+      
+      output$mapping_status <- renderUI({
+        div(class = "alert alert-success",
+            icon("check-circle"),
+            "Mapping file loaded successfully")
+      })
+    }, error = function(e) {
+      output$mapping_status <- renderUI({
+        div(class = "alert alert-danger",
+            icon("exclamation-circle"),
+            paste("Error loading mapping file:", e$message))
+      })
+    })
+  })
+  
+  # Data validation handler
+  observeEvent(input$validate_integration, {
+    req(integration_state$external_data,
+        integration_state$mapping,
+        input$dataset_name)
+    
+    tryCatch({
+      processed_data <- process_external_data(
+        input$external_data$datapath,
+        integration_state$mapping,
+        input$dataset_name
+      )
+      
+      integration_state$processed_data <- processed_data
+      validation <- validate_dataset(processed_data)
+      integration_state$validation_result <- validation
+      
+      output$validation_status <- renderUI({
+        div(
+          class = if(validation$valid) "alert alert-success" else "alert alert-danger",
+          icon(if(validation$valid) "check-circle" else "exclamation-circle"),
+          validation$message
+        )
+      })
+    }, error = function(e) {
+      output$validation_status <- renderUI({
+        div(
+          class = "alert alert-danger",
+          icon("exclamation-circle"),
+          paste("Error processing data:", e$message)
+        )
+      })
+    })
+  })
+  
+  # Integration handler
+  observeEvent(input$integrate_data, {
+    req(integration_state$processed_data,
+        integration_state$validation_result$valid,
+        input$dataset_name)
+    
+    withProgress(message = 'Integrating dataset...', value = 0, {
+      tryCatch({
+        # Update progress
+        incProgress(0.3, detail = "Validating data...")
+        
+        # Get current datasets
+        current_datasets <- integrated_datasets_rv()
+        
+        # Check if dataset name already exists
+        if(input$dataset_name %in% names(current_datasets)) {
+          showNotification(
+            paste("Dataset name", input$dataset_name, "already exists. Please choose a different name."),
+            type = "error"
+          )
+          return()
+        }
+        
+        # Add new dataset to the list
+        incProgress(0.3, detail = "Saving data...")
+        current_datasets[[input$dataset_name]] <- integration_state$processed_data
+        
+        # Update reactive value
+        integrated_datasets_rv(current_datasets)
+        
+        # Save to disk
+        saveDatasets(current_datasets)
+        
+        # Success message
+        showNotification(
+          paste("Dataset", input$dataset_name, "successfully integrated!"),
+          type = "message"
+        )
+        
+        # Update dataset choices in UI
+        updateCheckboxGroupInput(session, "selected_datasets",
+                               choices = setNames(names(current_datasets),
+                                                paste(names(current_datasets), "Data")),
+                               selected = input$dataset_name)
+        
+        # Reset states
+        integration_state$processed_data <- NULL
+        integration_state$validation_result$valid <- FALSE
+        
+      }, error = function(e) {
+        showNotification(
+          paste("Integration failed:", e$message),
+          type = "error"
+        )
+      })
     })
   })
   
@@ -585,55 +1242,164 @@ function(input, output, session) {
                     type = "message")
   })
   
-  # Integration handler
-  observeEvent(input$integrate_data, {
-    req(integration_state$processed_data,
-        integration_state$validation_result$valid,
-        input$dataset_name)
+  # Section 10: Statistical Analysis -------------------------
+  
+  # Update comparison groups
+  observeEvent(input$update_comparison, {
+    req(input$group1_select, input$group2_select)
     
-    withProgress(message = 'Integrating dataset...', value = 0, {
-      tryCatch({
-        current_datasets <- integrated_datasets_rv()
-        current_datasets[[input$dataset_name]] <- integration_state$processed_data
-        integrated_datasets_rv(current_datasets)
-        
-        saveDatasets(current_datasets)
-        
-        showNotification(
-          paste("Successfully integrated dataset:", input$dataset_name),
-          type = "message"
-        )
-      }, error = function(e) {
-        showNotification(
-          paste("Error during integration:", e$message),
-          type = "error",
-          duration = NULL
-        )
+    group_comparison$group1 <- input$group1_select
+    group_comparison$group2 <- input$group2_select
+    
+    # Trigger stats calculation
+    stats_data <- calculate_statistics()
+    if(!is.null(stats_data)) {
+      output$stats_table <- renderDT({
+        datatable(stats_data,
+                 options = list(scrollX = TRUE, pageLength = 15)) %>%
+          formatSignif(columns = c("p_value", "effect_size"), digits = 3)
       })
-    })
+    }
   })
   
-  # Dataset information table
-  output$integrated_datasets_table <- renderDT({
-    datasets <- integrated_datasets_rv()
-    req(length(datasets) > 0)
+  # Calculate statistics
+  calculate_statistics <- reactive({
+    req(group_comparison$group1, group_comparison$group2)
     
-    map_df(names(datasets), ~{
-      data <- datasets[[.x]]
-      tibble(
-        Dataset = .x,
-        Rows = nrow(data),
-        Columns = ncol(data),
-        "Sample Size" = length(unique(data$participant_id)),
-        "Age Range" = sprintf("%d-%d", min(data$age), max(data$age)),
-        "Integration Date" = as.character(Sys.Date())
-      )
-    }) %>%
-      datatable(options = list(
-        pageLength = 5,
-        searching = FALSE,
-        lengthChange = FALSE
-      ))
+    plot_data <- prepare_plot_data()
+    req(plot_data)
+    
+    group_var <- get_group_var()
+    
+    # Filter data for selected groups
+    analysis_data <- plot_data %>%
+      filter(!!sym(group_var) %in% c(group_comparison$group1, group_comparison$group2))
+    
+    # Get numeric parameters
+    numeric_cols <- names(analysis_data)[sapply(analysis_data, is.numeric)]
+    numeric_cols <- setdiff(numeric_cols, c("age"))
+    
+    # Calculate statistics for each parameter
+    results <- map_df(numeric_cols, function(param) {
+      tryCatch({
+        # Perform t-test
+        t_test <- t.test(
+          analysis_data[[param]][analysis_data[[group_var]] == group_comparison$group1],
+          analysis_data[[param]][analysis_data[[group_var]] == group_comparison$group2]
+        )
+        
+        # Calculate effect size (Cohen's d)
+        ef_size <- cohen.d(analysis_data[[param]] ~ !!sym(group_var), 
+                          data = analysis_data)
+        
+        tibble(
+          Parameter = param,
+          Mean_Group1 = mean(analysis_data[[param]][analysis_data[[group_var]] == group_comparison$group1], na.rm = TRUE),
+          Mean_Group2 = mean(analysis_data[[param]][analysis_data[[group_var]] == group_comparison$group2], na.rm = TRUE),
+          Difference = Mean_Group2 - Mean_Group1,
+          P_value = t_test$p.value,
+          Effect_size = ef_size$estimate,
+          Significant = P_value < 0.05
+        )
+      }, error = function(e) NULL)
+    })
+    
+    if(nrow(results) == 0) return(NULL)
+    results
   })
   
-} # End of server function
+  # Update statistics table
+  output$stats_table <- renderDT({
+    stats_data <- calculate_statistics()
+    req(stats_data)
+    
+    datatable(stats_data,
+              options = list(scrollX = TRUE, pageLength = 15)) %>%
+      formatRound(columns = c("Mean_Group1", "Mean_Group2", "Difference", "Effect_size"), 
+                 digits = 3) %>%
+      formatSignif(columns = c("P_value"), digits = 3) %>%
+      formatStyle(
+        'Significant',
+        backgroundColor = styleEqual(c(TRUE, FALSE), c('#a8e6cf', '#ffd3b6'))
+      )
+  })
+  
+  # Update volcano plot
+  output$volcano_plot <- renderPlotly({
+    stats_data <- calculate_statistics()
+    req(stats_data)
+    
+    p <- ggplot(stats_data, 
+                aes(x = Effect_size, 
+                    y = -log10(P_value),
+                    color = Significant,
+                    text = paste("Parameter:", Parameter,
+                               "\nEffect Size:", round(Effect_size, 3),
+                               "\np-value:", format.pval(P_value, digits = 3)))) +
+      geom_point(size = 3) +
+      geom_hline(yintercept = -log10(0.05), 
+                 linetype = "dashed", 
+                 color = "grey50", 
+                 alpha = 0.5) +
+      scale_color_manual(values = c("TRUE" = "#FF9642", "FALSE" = "#87CEEB")) +
+      theme_minimal() +
+      theme(
+        text = element_text(family = "sans-serif"),
+        plot.title = element_text(hjust = 0.5, family = "sans-serif")
+      ) +
+      labs(
+        title = paste("Volcano Plot:",
+                     group_comparison$group2, "vs", group_comparison$group1),
+        x = "Effect Size",
+        y = "-log10(p-value)",
+        color = "Significant"
+      )
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  # Update dataset management dropdowns
+  observe({
+    datasets <- integrated_datasets_rv()
+    updateSelectInput(session, "dataset_to_delete",
+                     choices = setNames(names(datasets), 
+                                      paste(names(datasets), "Data")))
+  })
+  
+  # Maintain parameter selection when datasets change
+  observeEvent(input$selected_datasets, {
+    # Store current parameter selection
+    current_param <- isolate(input$blood_param)
+    new_choices <- filtered_params()
+    
+    # Update choices but keep current selection regardless
+    updateSelectizeInput(session, "blood_param",
+                        choices = new_choices,
+                        selected = current_param,
+                        server = TRUE)
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
+  
+  # Update PCA parameters automatically
+  observe({
+    req(input$pca_datasets)
+    
+    # Get common parameters across selected datasets
+    datasets <- integrated_datasets_rv()
+    selected_data <- datasets[input$pca_datasets]
+    
+    common_params <- Reduce(intersect, 
+                          lapply(selected_data, function(x) {
+                            names(x)[sapply(x, is.numeric)]
+                          }))
+    
+    # Remove metadata columns
+    param_cols <- setdiff(common_params, 
+                         c("age", "month"))
+    
+    # Update PCA parameter selection
+    updateSelectizeInput(session, "pca_params",
+                        choices = setNames(param_cols, 
+                                         str_to_title(str_replace_all(param_cols, "_", " "))),
+                        selected = param_cols)
+  })
+}

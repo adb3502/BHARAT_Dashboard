@@ -13,14 +13,9 @@ library(viridis)
 library(wesanderson)
 library(effsize)
 library(rstatix)
-library(showtext)
-library(sysfonts)
 library(shinyBS)
 library(factoextra)
-
-# Add custom fonts
-font_add_google("Manrope", "Manrope")
-showtext_auto()
+library(RColorBrewer)
 
 #' Data persistence functions
 saveDatasets <- function(datasets, dir = "data/saved_datasets") {
@@ -52,7 +47,7 @@ standardize_age_group <- function(age) {
 #' Custom group functions
 apply_custom_group <- function(data, custom_groups) {
   if (length(custom_groups) == 0) {
-    data$custom_group <- "No Groups Defined"
+    data$custom_group <- NA
     return(data)
   }
   
@@ -61,15 +56,18 @@ apply_custom_group <- function(data, custom_groups) {
     quo(age_group %in% !!custom_groups[[group_name]] ~ !!group_name)
   })
   
-  # Add default case
-  cases$default <- quo(TRUE ~ "Other")
-  
   # Apply grouping and convert to factor with levels in original order
   data %>%
     mutate(
       custom_group = case_when(!!!cases),
-      custom_group = factor(custom_group, levels = c(names(custom_groups), "Other"))
-    )
+      custom_group = factor(custom_group, levels = names(custom_groups)),
+      custom_group_sex = if("custom_combined" %in% names(custom_groups)) {
+        paste(custom_group, sex)
+      } else {
+        NA
+      }
+    ) %>%
+    filter(!is.na(custom_group))  # Remove points not in any custom group
 }
 
 #' PCA Analysis Functions
@@ -79,32 +77,97 @@ compute_pca <- function(data, selected_params, scale = TRUE) {
     select(all_of(selected_params)) %>%
     drop_na()
   
-  # Perform PCA
-  pca_result <- prcomp(numeric_data, scale. = scale)
+  # Standardize the data (z-score standardization)
+  standardized_data <- scale(numeric_data, center = TRUE, scale = TRUE)
+  
+  # Check for near-zero variance
+  var_check <- apply(standardized_data, 2, var)
+  if(any(var_check < 1e-10)) {
+    warning("Some variables have near-zero variance after scaling")
+  }
+  
+  # Perform PCA with standardized data
+  pca_result <- prcomp(standardized_data, scale. = FALSE)  # Already scaled
   
   # Calculate variance explained
   var_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
   
-  # Get loadings
+  # Get loadings with variable names
   loadings <- as.data.frame(pca_result$rotation)
   
-  # Get scores
+  # Get scores with proper scaling
   scores <- as.data.frame(pca_result$x)
+  
+  # Calculate variable contributions to each PC
+  contributions <- sweep(pca_result$rotation^2, 2, pca_result$sdev^2, "*")
+  contributions <- as.data.frame(contributions)
+  
+  # Calculate quality of representation (cos2)
+  cos2 <- sweep(pca_result$rotation^2, 1, rowSums(pca_result$rotation^2), "/")
+  cos2 <- as.data.frame(cos2)
   
   return(list(
     pca = pca_result,
     var_explained = var_explained,
     loadings = loadings,
-    scores = scores
+    scores = scores,
+    contributions = contributions,
+    cos2 = cos2,
+    scaling_info = list(
+      center = attr(standardized_data, "scaled:center"),
+      scale = attr(standardized_data, "scaled:scale")
+    )
   ))
 }
 
 get_top_loadings <- function(loadings_df, pc, n = 10) {
   loadings_df %>%
     select(!!sym(pc)) %>%
-    mutate(parameter = rownames(loadings_df)) %>%
-    arrange(desc(abs(!!sym(pc)))) %>%
-    slice_head(n = n)
+    mutate(
+      parameter = rownames(loadings_df),
+      abs_loading = abs(!!sym(pc))
+    ) %>%
+    arrange(desc(abs_loading)) %>%
+    slice_head(n = n) %>%
+    select(-abs_loading)
+}
+
+#' Function to get variable contributions to PCs
+get_var_contributions <- function(pca_result, n_vars = 10) {
+  contributions <- pca_result$contributions
+  
+  # For each PC, get top contributing variables
+  map_df(names(contributions), function(pc) {
+    contributions %>%
+      select(!!sym(pc)) %>%
+      mutate(
+        parameter = rownames(contributions),
+        PC = pc,
+        contribution = !!sym(pc)
+      ) %>%
+      arrange(desc(contribution)) %>%
+      slice_head(n = n_vars) %>%
+      select(-!!sym(pc))
+  })
+}
+
+#' Function to assess variable quality of representation
+assess_var_quality <- function(pca_result) {
+  cos2_df <- pca_result$cos2
+  
+  # Calculate total cos2 across all PCs
+  total_cos2 <- rowSums(cos2_df)
+  
+  tibble(
+    parameter = rownames(cos2_df),
+    total_cos2 = total_cos2,
+    quality = case_when(
+      total_cos2 >= 0.8 ~ "High",
+      total_cos2 >= 0.5 ~ "Medium",
+      TRUE ~ "Low"
+    )
+  ) %>%
+    arrange(desc(total_cos2))
 }
 
 #' Data Processing Functions
@@ -119,7 +182,7 @@ process_external_data <- function(data_path, mapping_df, dataset_name) {
     sex_col <- mapping_df$external_column[mapping_df$bharat_column == "sex"]
     
     if(any(is.na(c(id_col, age_col, sex_col)))) {
-      stop("Missing required column mappings")
+      stop("Missing required column mappings for participant_id, age, or sex")
     }
     
     # Process required columns
@@ -153,26 +216,132 @@ process_external_data <- function(data_path, mapping_df, dataset_name) {
   })
 }
 
+#' Generate mapping template function
+generate_mapping_template <- function() {
+  # Get blood parameter names from the blood data
+  blood_params <- names(blood_data)[!names(blood_data) %in% c("participant_id", "month")]
+  
+  # Create template dataframe
+  template <- tibble(
+    bharat_column = c(
+      "participant_id",  # Required
+      "age",            # Required
+      "sex",            # Required
+      blood_params      # Optional blood parameters
+    ),
+    external_column = NA_character_,
+    data_type = c(
+      "character",      # participant_id
+      "numeric",        # age
+      "factor",         # sex
+      rep("numeric", length(blood_params))  # blood parameters
+    ),
+    required = c(
+      "yes",           # participant_id
+      "yes",           # age
+      "yes",           # sex
+      rep("no", length(blood_params))  # blood parameters
+    ),
+    notes = c(
+      "Unique identifier for each participant",
+      "Age in years",
+      "Male or Female",
+      rep("Blood parameter value", length(blood_params))
+    )
+  )
+  
+  return(template)
+}
+
+#' Helper function to standardize sex values
 standardize_sex <- function(sex_values) {
   sex_values <- str_trim(sex_values)
   case_when(
-    str_to_lower(sex_values) %in% c("m", "male") ~ "Male",
-    str_to_lower(sex_values) %in% c("f", "female") ~ "Female",
+    str_to_lower(sex_values) %in% c("m", "male", "1") ~ "Male",
+    str_to_lower(sex_values) %in% c("f", "female", "2") ~ "Female",
     TRUE ~ NA_character_
   )
 }
 
+#' Helper function to convert column types
 convert_column <- function(values, data_type) {
   tryCatch({
-    switch(data_type,
-           "numeric" = as.numeric(str_remove_all(as.character(values), ",")),
+    # Remove any leading/trailing whitespace
+    values <- str_trim(values)
+    
+    # Handle empty or NA values
+    values[values == ""] <- NA
+    
+    # Convert based on data type
+    result <- switch(data_type,
+           "numeric" = {
+             # Remove commas and convert
+             clean_vals <- str_remove_all(as.character(values), ",")
+             # Convert to numeric, warning=FALSE to suppress warnings
+             as.numeric(clean_vals)
+           },
            "character" = as.character(values),
            "factor" = as.factor(values),
            "date" = as.Date(values),
            values)
+    
+    return(result)
+    
   }, error = function(e) {
     warning(paste("Error converting column:", e$message))
-    NA
+    rep(NA, length(values))
+  })
+}
+
+#' Validation function for processed data
+validate_dataset <- function(data) {
+  tryCatch({
+    # Check if data is a dataframe
+    if(!is.data.frame(data)) {
+      return(list(valid = FALSE, message = "Invalid data format"))
+    }
+    
+    # Check required columns
+    required_cols <- c("participant_id", "age", "sex", "age_group", "dataset", "group_combined")
+    missing_cols <- setdiff(required_cols, names(data))
+    if(length(missing_cols) > 0) {
+      return(list(valid = FALSE, 
+                 message = paste("Missing required columns:", 
+                               paste(missing_cols, collapse = ", "))))
+    }
+    
+    # Check for empty data
+    if(nrow(data) == 0) {
+      return(list(valid = FALSE, message = "Dataset is empty"))
+    }
+    
+    # Check for missing values in key columns
+    key_cols <- c("participant_id", "age", "sex")
+    for(col in key_cols) {
+      if(any(is.na(data[[col]]))) {
+        return(list(valid = FALSE, 
+                   message = paste("Missing values found in", col)))
+      }
+    }
+    
+    # Check age range
+    if(any(data$age < 18, na.rm = TRUE)) {
+      return(list(valid = FALSE, message = "Ages below 18 found in dataset"))
+    }
+    
+    # Check sex values
+    if(!all(data$sex %in% c("Male", "Female"), na.rm = TRUE)) {
+      return(list(valid = FALSE, 
+                 message = "Invalid sex values found (should be Male or Female)"))
+    }
+    
+    # All checks passed
+    return(list(valid = TRUE, 
+               message = "Dataset validation successful"))
+    
+  }, error = function(e) {
+    return(list(valid = FALSE, 
+               message = paste("Validation error:", e$message)))
   })
 }
 
@@ -182,10 +351,11 @@ get_color_palette <- function(scheme, n) {
                   "zissou" = wes_palette("Zissou1"),
                   "darjeeling" = wes_palette("Darjeeling1"),
                   "royal" = wes_palette("Royal1"),
-                  wes_palette("Zissou1"))
+                  wes_palette("Zissou1")  # default
+  )
   
   if(n <= length(colors)) {
-    colors[1:n]
+    return(colors[1:n])
   } else {
     colorRampPalette(colors)(n)
   }
@@ -252,7 +422,8 @@ grouping_choices <- c(
   "Age Groups" = "age",
   "Sex" = "sex",
   "Age and Sex Combined" = "combined",
-  "Custom Groups" = "custom"
+  "Custom Age Groups" = "custom",
+  "Custom Age Groups and Sex Combined" = "custom_combined"
 )
 
 color_by_choices <- c(
@@ -270,10 +441,6 @@ color_schemes <- c(
 )
 
 dataset_colors <- c(
-  "BHARAT" = "#FF9642",
-  "External_1" = "#00A08A",
-  "External_2" = "#F2AD00",
-  "External_3" = "#5BBCD6",
-  "External_4" = "#E6AA68",
-  "External_5" = "#A1C181"
+  "BHARAT" = "#4682B4",  # Steel Blue
+  "ICPH" = "#FF8C00"     # Dark Orange
 )
