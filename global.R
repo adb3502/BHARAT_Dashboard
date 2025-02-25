@@ -44,77 +44,97 @@ standardize_age_group <- function(age) {
   )
 }
 
-#' Custom group functions
+# Complete apply_custom_group function with strict order preservation
+# Simplified apply_custom_group function - no fancy features, just basic functionality
 apply_custom_group <- function(data, custom_groups) {
-  # Validate inputs immediately with clear return path
-  if (!is.data.frame(data)) {
-    warning("Input must be a data frame")
-    return(data)  # Return original data to avoid breaking the pipeline
+  # Basic input validation
+  if (!is.data.frame(data) || nrow(data) == 0) {
+    warning("Invalid data input")
+    return(data)
   }
-  
   if (!is.list(custom_groups) || length(custom_groups) == 0) {
-    warning("No custom groups provided")
-    return(data)  # Return original data
+    warning("Invalid custom groups")
+    return(data)
   }
-  
   if (!"age_group" %in% names(data)) {
-    warning("Data frame must contain 'age_group' column")
-    return(data)  # Return original data
+    warning("Missing age_group column in data")
+    return(data)
   }
   
-  # Wrap everything in tryCatch to prevent crashes
-  result <- tryCatch({
-    # Create cases for case_when using the order of the custom groups
-    cases <- lapply(names(custom_groups), function(group_name) {
-      quo(age_group %in% !!custom_groups[[group_name]] ~ !!group_name)
-    })
+  # Get the order of groups (keys of the list)
+  group_names <- names(custom_groups)
+  
+  # Create an output data frame
+  result <- data
+  
+  # Add a custom_group column (initialized as NA)
+  result$custom_group <- NA_character_
+  
+  # Iterate through each custom group and assign values
+  for (i in seq_along(group_names)) {
+    group_name <- group_names[i]
+    age_ranges <- custom_groups[[group_name]]
     
-    # Add custom group column, ensuring order is preserved
-    result <- data %>%
-      mutate(
-        custom_group = case_when(!!!cases, TRUE ~ NA_character_),
-        # Force factor levels in the exact order of custom_groups names
-        custom_group = factor(custom_group, levels = names(custom_groups))
-      )
+    # Find rows where age_group is in the current group's ranges
+    matches <- result$age_group %in% age_ranges
     
-    # Check if any custom groups were successfully applied
-    if (all(is.na(result$custom_group))) {
-      warning("No age_group values matched any custom groups")
-      return(data)  # Return original data
+    # Assign the group name to matching rows
+    result$custom_group[matches] <- group_name
+  }
+  
+  # Convert custom_group to a factor with levels in the original order
+  result$custom_group <- factor(result$custom_group, levels = group_names)
+  
+  # Add a numeric order column for sorting
+  result$custom_group_order <- as.integer(result$custom_group)
+  
+  # Handle combined groups if sex column exists
+  if ("sex" %in% names(result)) {
+    # Create combined group
+    result$custom_group_combined <- paste(result$custom_group, result$sex)
+    
+    # Create all possible combinations in order
+    combined_levels <- c()
+    for (group in group_names) {
+      combined_levels <- c(combined_levels, 
+                          paste(group, "Male"), 
+                          paste(group, "Female"))
     }
     
-    # Add combined group column if sex is available
-    if ("sex" %in% names(data)) {
-      # Create combined levels in the exact order: first by custom group, then by sex
-      combined_levels <- expand.grid(
-        custom_group = names(custom_groups),
-        sex = c("Male", "Female"),
-        stringsAsFactors = FALSE
-      ) %>%
-      arrange(match(custom_group, names(custom_groups)), sex) %>%
-      mutate(combined = paste(custom_group, sex)) %>%
-      pull(combined)
-      
-      result <- result %>%
-        mutate(
-          custom_group_combined = if_else(
-            !is.na(custom_group),
-            paste(custom_group, sex),
-            NA_character_
-          ),
-          # Force factor levels in the exact order we created
-          custom_group_combined = factor(custom_group_combined, levels = combined_levels)
-        )
-    }
+    # Set as factor with correct order
+    result$custom_group_combined <- factor(result$custom_group_combined, 
+                                          levels = combined_levels)
     
-    return(result)
-    
-  }, error = function(e) {
-    warning(paste("Error applying custom groups:", e$message))
-    return(data)  # Return original data on error
-  })
+    # Add numeric order for combined groups
+    result$custom_group_combined_order <- as.integer(result$custom_group_combined)
+  }
   
   return(result)
+}
+
+custom_group_order_rv <- reactiveVal(c())
+
+# Function to save both groups and their order
+saveCustomGroupsWithOrder <- function(custom_groups, order_vector, 
+                                      dir = "data/saved_custom_groups") {
+  if(!dir.exists(dir)) dir.create(dir, recursive = TRUE)
+  saveRDS(list(groups = custom_groups, order = order_vector), 
+          file.path(dir, "custom_groups.rds"))
+}
+
+# Function to load groups with their order
+loadSavedCustomGroupsWithOrder <- function(dir = "data/saved_custom_groups") {
+  rds_file <- file.path(dir, "custom_groups.rds")
+  if(file.exists(rds_file)) {
+    saved_data <- readRDS(rds_file)
+    # Return both components or empty defaults
+    list(
+      groups = if(!is.null(saved_data$groups)) saved_data$groups else list(),
+      order = if(!is.null(saved_data$order)) saved_data$order else c()
+    )
+  } else {
+    list(groups = list(), order = c())
+  }
 }
 
 #' PCA Analysis Functions

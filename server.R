@@ -39,7 +39,9 @@ function(input, output, session) {
     processed_data = NULL
   )
   
-  custom_groups <- reactiveVal(list())
+  saved_data <- loadSavedCustomGroupsWithOrder()
+  custom_groups <- reactiveVal(saved_data$groups)
+  custom_group_order_rv <- reactiveVal(saved_data$order)
   integrated_datasets_rv <- reactiveVal(loadSavedDatasets())
   
   # PCA state management
@@ -59,13 +61,14 @@ function(input, output, session) {
   
   # Get grouping variable
   get_group_var <- reactive({
-    switch(input$grouping,
-           "age" = "age_group",
-           "sex" = "sex",
-           "age_sex" = "group_combined",
-           "custom_age" = "custom_group",
-           "custom_age_sex" = "custom_group_combined")
-  })
+  switch(input$grouping,
+         "age" = "age_group",
+         "sex" = "sex",
+         "age_sex" = "group_combined",
+         "custom_age" = "custom_group",
+         "custom_age_sex" = "custom_group_combined",
+         "age_group")  # Default fallback
+})
   
   # Common parameters reactive
   filtered_params <- reactive({
@@ -96,61 +99,62 @@ function(input, output, session) {
     )
   })
   
-  # Data preparation function
-  prepare_plot_data <- reactive({
-    req(input$selected_datasets, input$selected_age_groups)
-    
-    datasets <- integrated_datasets_rv()
-    
-    tryCatch({
-      # Combine datasets
-      all_data <- lapply(input$selected_datasets, function(ds) {
-        if(ds %in% names(datasets)) {
-          data <- datasets[[ds]]
-          
-          # Filter by age groups
-          filtered <- data %>%
-            filter(age_group %in% input$selected_age_groups)
-          
-          # Apply custom groups if selected
-          if(input$grouping %in% c("custom_age", "custom_age_sex")) {
-            current_groups <- custom_groups()
-            if(length(current_groups) > 0) {
-              filtered <- apply_custom_group(filtered, current_groups)
-              
-              # Add combined grouping for custom groups and sex if needed, but only if custom_group exists
-              if(input$grouping == "custom_age_sex" && "custom_group" %in% names(filtered)) {
-                filtered <- filtered %>%
-                  mutate(custom_group_combined = paste(custom_group, sex))
-              } else if(input$grouping == "custom_age_sex") {
-                # If custom_group doesn't exist, log a warning and revert to a simpler grouping
-                warning("Custom groups not properly applied to the data.")
-                updateSelectInput(session, "grouping", selected = "age")
-              }
+  # Data preparation function - UPDATED FUNCTION
+  # Simplified prepare_plot_data function
+prepare_plot_data <- reactive({
+  req(input$selected_datasets, input$selected_age_groups)
+  
+  datasets <- integrated_datasets_rv()
+  
+  tryCatch({
+    # Combine datasets
+    all_data <- lapply(input$selected_datasets, function(ds) {
+      if(ds %in% names(datasets)) {
+        data <- datasets[[ds]]
+        
+        # Filter by age groups
+        filtered <- data %>%
+          filter(age_group %in% input$selected_age_groups)
+        
+        # Apply custom groups if selected
+        if(input$grouping %in% c("custom_age", "custom_age_sex")) {
+          current_groups <- custom_groups()
+          if(length(current_groups) > 0) {
+            # Apply custom groups with simplified function
+            filtered <- apply_custom_group(filtered, current_groups)
+            
+            # Only filter if custom_group column exists and has non-NA values
+            if("custom_group" %in% names(filtered) && any(!is.na(filtered$custom_group))) {
+              filtered <- filtered[!is.na(filtered$custom_group), ]
             } else {
-              # If no custom groups exist, revert to a simpler grouping
+              # Fallback if custom groups couldn't be applied
+              showNotification("Custom groups couldn't be applied to the data.", type = "warning")
               updateSelectInput(session, "grouping", selected = "age")
-              showNotification("No custom groups defined. Reverting to standard age groups.", type = "warning")
             }
+          } else {
+            # No custom groups defined
+            showNotification("No custom groups defined. Using standard age groups.", type = "warning")
+            updateSelectInput(session, "grouping", selected = "age")
           }
-          
-          return(filtered)
-        } else {
-          return(NULL)
         }
-      })
-      
-      # Remove NULL entries and combine
-      all_data <- all_data[!sapply(all_data, is.null)]
-      
-      if(length(all_data) == 0) return(NULL)
-      
-      bind_rows(all_data)
-    }, error = function(e) {
-      showNotification(paste("Error preparing data:", e$message), type = "error")
-      NULL
+        
+        return(filtered)
+      } else {
+        return(NULL)
+      }
     })
+    
+    # Remove NULL entries and combine
+    all_data <- all_data[!sapply(all_data, is.null)]
+    
+    if(length(all_data) == 0) return(NULL)
+    
+    bind_rows(all_data)
+  }, error = function(e) {
+    showNotification(paste("Error preparing data:", e$message), type = "error")
+    NULL
   })
+})
   
   # Section 3: UI Updates -------------------------
   
@@ -242,63 +246,96 @@ function(input, output, session) {
   })
   
   # Section 4: Custom Groups Management -------------------------
+  # Custom group management with order preservation
+  # Replace your current add_group observer with this:
+observeEvent(input$add_group, {
+  req(input$group_name, input$group_ranges)
   
-  # Custom group management
-  observeEvent(input$add_group, {
-    req(input$group_name, input$group_ranges)
-    
-    if(input$group_name == "" || length(input$group_ranges) == 0) {
-      showNotification("Please provide both group name and ranges", type = "error")
-      return()
+  if(input$group_name == "" || length(input$group_ranges) == 0) {
+    showNotification("Please provide both group name and ranges", type = "error")
+    return()
+  }
+  
+  # Get current groups
+  current_groups <- custom_groups()
+  current_order <- custom_group_order_rv()
+  
+  # Add new group
+  current_groups[[input$group_name]] <- input$group_ranges
+  
+  # Add to order list - preserve exact creation order
+  if(!(input$group_name %in% current_order)) {
+    current_order <- c(current_order, input$group_name)
+  }
+  
+  # Update reactive values
+  custom_groups(current_groups)
+  custom_group_order_rv(current_order)
+  
+  # Save with order preserved
+  saveCustomGroupsWithOrder(current_groups, current_order)
+  
+  # Update UI
+  updateTextInput(session, "group_name", value = "")
+  updateSelectInput(session, "group_ranges", selected = character(0))
+  
+  showNotification(paste("Custom group", input$group_name, "created successfully!"), type = "message")
+})
+
+  
+# Update custom groups table - FIXED FUNCTION
+observe({
+  current_groups <- custom_groups()
+  
+  output$current_groups <- renderDT({
+    if(length(current_groups) == 0) {
+      return(datatable(data.frame(Group = character(0), Ranges = character(0), Order = integer(0)),
+                       options = list(dom = 't'),
+                       rownames = FALSE))
     }
     
-    # Get current groups while maintaining order
-    current_groups <- custom_groups()
-    current_groups[[input$group_name]] <- input$group_ranges
-    custom_groups(current_groups)
-    
-    # Update UI
-    updateTextInput(session, "group_name", value = "")
-    updateSelectInput(session, "group_ranges", selected = character(0))
+    # Fix: Create data frame properly to avoid duplicate columns
+    groups_df <- data.frame(
+      Group = names(current_groups),
+      Ranges = sapply(current_groups, function(x) paste(x, collapse = ", ")),
+      Order = seq_along(current_groups),
+      stringsAsFactors = FALSE
+    )
+    datatable(groups_df, 
+              selection = 'single',
+              options = list(
+                pageLength = 5,
+                lengthChange = FALSE,
+                searching = FALSE,
+                ordering = FALSE,
+                paging = FALSE
+              ))
   })
-  
-  # Update custom groups table
-  observe({
-    current_groups <- custom_groups()
-    
-    output$current_groups <- renderDT({
-      if(length(current_groups) == 0) {
-        return(datatable(data.frame(Group = character(0), Ranges = character(0)),
-                         options = list(dom = 't'),
-                         rownames = FALSE))
-      }
-      
-      groups_df <- data.frame(
-        Group = names(current_groups),
-        Ranges = sapply(current_groups, paste, collapse = ", "),
-        stringsAsFactors = FALSE
-      )
-      datatable(groups_df, 
-                selection = 'single',
-                options = list(
-                  pageLength = 5,
-                  lengthChange = FALSE,
-                  searching = FALSE,
-                  ordering = FALSE,
-                  paging = FALSE
-                ))
-    })
-  })
+})
   
   # Remove selected groups handler
-  observeEvent(input$remove_selected_groups, {
-    req(input$current_groups_rows_selected)
-    
-    current_groups <- custom_groups()
-    group_to_remove <- names(current_groups)[input$current_groups_rows_selected]
-    current_groups[[group_to_remove]] <- NULL
-    custom_groups(current_groups)
-  })
+observeEvent(input$remove_selected_groups, {
+  req(input$current_groups_rows_selected)
+  
+  current_groups <- custom_groups()
+  current_order <- custom_group_order_rv()
+  
+  # Get the group to remove
+  group_to_remove <- names(current_groups)[input$current_groups_rows_selected]
+  
+  # Remove from groups and order
+  current_groups[[group_to_remove]] <- NULL
+  current_order <- current_order[current_order != group_to_remove]
+  
+  # Update reactive values
+  custom_groups(current_groups)
+  custom_group_order_rv(current_order)
+  
+  # Save updated data
+  saveCustomGroupsWithOrder(current_groups, current_order)
+  
+  showNotification(paste("Custom group", group_to_remove, "removed."), type = "message")
+})
   
   # Handle custom group modal triggers
   observeEvent(input$show_group_modal, {
@@ -486,166 +523,129 @@ validate_custom_groups <- reactive({
   return(TRUE)
 })
 
-# Render the Blood Parameters plot
-# Render the Blood Parameters plot
+# Complete blood_dist render function with fixes for both ordering and overlapping boxplots
+# Simplified blood_dist render function
 output$blood_dist <- renderPlotly({
   req(plot_data(), input$color_by)
   
   # Get the data
   data <- plot_data()
+  if(is.null(data) || nrow(data) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No data available for plotting."))
+  }
   
-  # Check if the selected parameter exists
+  # Check parameter exists
   if(!input$blood_param %in% names(data)) {
     return(plotly_empty(type = "scatter", mode = "markers") %>%
-             layout(title = "Selected parameter not available in current dataset selection."))
+             layout(title = "Selected parameter not available."))
   }
   
   # Determine grouping variable
-  group_var <- get_group_var()
+  group_var <- switch(input$grouping,
+                     "age" = "age_group",
+                     "sex" = "sex",
+                     "age_sex" = "group_combined",
+                     "custom_age" = "custom_group",
+                     "custom_age_sex" = "custom_group_combined",
+                     "age_group")  # fallback
   
-  # Ensure grouping variable exists
+  # Check grouping variable exists
   if(!group_var %in% names(data)) {
     return(plotly_empty(type = "scatter", mode = "markers") %>%
-             layout(title = "Grouping variable not found in the data."))
+             layout(title = paste("Grouping variable", group_var, "not found.")))
   }
   
-  # Convert selected parameter to numeric and create initial grouping
-  data <- data %>% 
-    mutate(
-      y_val = as.numeric(!!sym(input$blood_param)),
-      group = factor(!!sym(group_var))
-    )
+  # Convert value to numeric
+  data$y_val <- as.numeric(data[[input$blood_param]])
   
-  # Check if conversion was successful
-  if(all(is.na(data$y_val))) {
-    return(plotly_empty(type = "scatter", mode = "markers") %>%
-             layout(title = "Selected parameter has no numeric data."))
-  }
-
-  # Now handle coloring separately using base R to avoid NSE issues
-  data$point_color <- as.character(data$group)  # Default coloring
-
-  # Only attempt to use a column for coloring if it actually exists in the data
-  if (input$color_by == "dataset") {
-    data$point_color <- as.character(data$dataset)
-  } else if (input$color_by == "age_group") {
-    data$point_color <- as.character(data$age_group)
-  } else if (input$color_by == "sex") {
-    data$point_color <- as.character(data$sex)
-  } else if (input$color_by == "age") {
+  # Handle coloring - keep it simple
+  if(input$color_by == "dataset") {
+    data$point_color <- data$dataset
+  } else if(input$color_by == "age_group") {
+    data$point_color <- data$age_group
+  } else if(input$color_by == "sex") {
+    data$point_color <- data$sex
+  } else if(input$color_by == "age") {
     data$point_color <- as.character(data$age)
-  } else if (input$color_by == "custom_age_group") {
-    if ("custom_group" %in% names(data)) {
-      data$point_color <- as.character(data$custom_group)
-    } else {
-      # Fallback if custom_group doesn't exist
-      data$point_color <- as.character(data$dataset)
-      showNotification("Custom groups not available. Using dataset colors instead.", type = "warning")
-    }
+  } else if(input$color_by == "custom_age_group" && "custom_group" %in% names(data)) {
+    data$point_color <- data$custom_group
+  } else {
+    # Default
+    data$point_color <- data[[group_var]]
   }
   
-  # Remove rows with missing values in essential columns
-  data <- data %>%
-    drop_na(group, y_val, point_color)
-  
-  # Check if we have any data after filtering
+  # Remove NAs
+  data <- data[!is.na(data$y_val), ]
   if(nrow(data) == 0) {
     return(plotly_empty(type = "scatter", mode = "markers") %>%
-             layout(title = "No data available after filtering."))
-  }
-
-  # Define color palette based on user selection
-  if(input$color_by == "age") {
-    # For continuous age, use gradient
-    colors <- colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
-  } else if(input$color_by == "dataset") {
-    # For datasets, use predefined colors
-    colors <- dataset_colors[levels(as.factor(data$point_color))]
-  } else {
-    # For categorical variables, use selected color scheme
-    n_colors <- length(levels(as.factor(data$point_color)))
-    colors <- get_color_palette(input$color_scheme, n_colors)
-    names(colors) <- levels(as.factor(data$point_color))
+             layout(title = "No numeric data available after filtering."))
   }
   
-  # Define tooltip content
-  data <- data %>% mutate(
-    tooltip = paste(
-      "ID:", participant_id,
-      "\nValue:", round(y_val, 2),
-      "\nGroup:", group,
-      "\nDataset:", dataset,
-      if(input$color_by == "age") paste("\nAge:", age) else ""
-    )
+  # Sort data if order columns exist (for custom groups)
+  if(group_var == "custom_group" && "custom_group_order" %in% names(data)) {
+    data <- data[order(data$custom_group_order), ]
+  } else if(group_var == "custom_group_combined" && "custom_group_combined_order" %in% names(data)) {
+    data <- data[order(data$custom_group_combined_order), ]
+  }
+  
+  # Create tooltip
+  data$tooltip <- paste(
+    "ID:", data$participant_id,
+    "\nValue:", round(data$y_val, 2),
+    "\nGroup:", data[[group_var]]
   )
   
-  # Create the base plot
-  p <- ggplot(data, aes(x = group, y = y_val, text = tooltip)) +
-    theme_minimal(base_size = 14) +
-    theme(
-      text = element_text(family = "sans-serif"),
-      axis.text = element_text(size = 12),
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      panel.grid.minor = element_blank(),
-      legend.position = "right",
-      plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
-      legend.title = element_text(size = 12),
-      legend.text = element_text(size = 10)
-    ) +
+  # Build plot - create basic plot first
+  p <- ggplot(data) +
+    theme_minimal() +
     labs(
       title = str_to_title(str_replace_all(input$blood_param, "_", " ")),
       x = str_to_title(str_replace_all(group_var, "_", " ")),
-      y = NULL,
-      color = str_to_title(
-        if (input$color_by == "age") "Age" else 
-          if (input$color_by != "none") str_replace_all(input$color_by, "_", " ") else 
-            str_replace_all(group_var, "_", " ")
-      )
+      y = NULL
     )
   
-  # Add color aesthetics based on the type of color variable
+  # Add boxplot/violin (no color aesthetic)
+  if(input$plot_type == "box") {
+    p <- p + geom_boxplot(aes(x = !!sym(group_var), y = y_val), 
+                         alpha = 0.3, outlier.shape = NA)
+  } else if(input$plot_type == "violin") {
+    p <- p + geom_violin(aes(x = !!sym(group_var), y = y_val), 
+                        alpha = 0.3)
+  }
+  
+  # Add colored points
   if(input$color_by == "age") {
-    p <- p + aes(color = point_color) + 
-      scale_color_gradientn(colors = colors)
+    p <- p + geom_jitter(aes(x = !!sym(group_var), y = y_val, 
+                            color = point_color, text = tooltip), 
+                        width = 0.2, alpha = 0.7, size = 3) +
+      scale_color_gradientn(colors = colorRampPalette(c("#FFB6C1", "#4682B4"))(100))
   } else if(input$color_by != "none") {
-    p <- p + aes(color = point_color) + 
-      scale_color_manual(values = colors)
+    p <- p + geom_jitter(aes(x = !!sym(group_var), y = y_val, 
+                            color = point_color, text = tooltip), 
+                        width = 0.2, alpha = 0.7, size = 3) +
+      scale_color_manual(values = get_color_palette(input$color_scheme, 
+                                                  length(unique(data$point_color))))
+  } else {
+    p <- p + geom_jitter(aes(x = !!sym(group_var), y = y_val, text = tooltip), 
+                        width = 0.2, alpha = 0.7, size = 3)
   }
   
-  # Add plot type specific layers
-  p <- switch(input$plot_type,
-    "box" = p + 
-      geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA) +
-      geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-    "violin" = p + 
-      geom_violin(alpha = 0.3, trim = FALSE) +
-      geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-    # Default to scatter plot
-    p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
-  )
+  # Convert to plotly
+  p <- ggplotly(p, tooltip = "text")
   
-  # Add reference lines if requested and available
-  ref_range <- blood_metadata %>%
-    filter(testname == str_replace_all(input$blood_param, "_", "-")) %>%
-    select(testminrangevalue, testmaxrangevalue)
-  
-  if (input$show_ref && nrow(ref_range) > 0) {
-    if (!is.na(ref_range$testminrangevalue)) {
-      p <- p + geom_hline(yintercept = ref_range$testminrangevalue,
-                          linetype = "dashed", color = "grey50", alpha = 0.5)
-    }
-    if (!is.na(ref_range$testmaxrangevalue)) {
-      p <- p + geom_hline(yintercept = ref_range$testmaxrangevalue,
-                          linetype = "dashed", color = "grey50", alpha = 0.5)
-    }
+  # Override category order in plotly if needed
+  if(group_var %in% c("custom_group", "custom_group_combined")) {
+    p <- p %>% layout(
+      xaxis = list(categoryorder = "array", 
+                   categoryarray = levels(factor(data[[group_var]])))
+    )
   }
   
-  # Convert ggplot to plotly
-  ggplotly(p, tooltip = "text") %>%
+  # Return with styling
+  p %>% 
     layout(
       font = list(family = "sans-serif"),
-      hoverlabel = list(font = list(family = "sans-serif")),
-      showlegend = TRUE,
       margin = list(b = 100, t = 50, r = 100, l = 80)
     ) %>%
     config(displayModeBar = TRUE)
@@ -722,113 +722,144 @@ output$stats_info <- renderUI({
 
   
   # Section 7: Demographic Plots -------------------------
+  # Demographics data preparation - UPDATED FUNCTION
+demographics_data <- reactive({
+  req(input$demo_datasets)
   
-  # Demographics data preparation
-  demographics_data <- reactive({
-    req(input$demo_datasets)
-    
-    # Get current datasets
-    datasets <- integrated_datasets_rv()
-    selected_data <- datasets[input$demo_datasets]
-    
-    # Combine selected datasets
-    combined_data <- bind_rows(selected_data) %>%
-      mutate(
-        age = as.numeric(age),
-        age_group = factor(age_group, levels = c("18-29", "30-44", "45-59", "60-74", "75+")),
-        sex = factor(sex, levels = c("Male", "Female"))
-      )
-    
-    # Filter by age groups if selected
-    if(!is.null(input$demo_age_groups) && length(input$demo_age_groups) > 0) {
-      combined_data <- combined_data %>% 
-        filter(age_group %in% input$demo_age_groups)
-    }
-    
-    combined_data
-  })
+  # Get current datasets
+  datasets <- integrated_datasets_rv()
+  selected_data <- datasets[input$demo_datasets]
   
-  # Age distribution plot
-  output$age_distribution <- renderPlotly({
-    plot_data_demo <- demographics_data()
-    req(plot_data_demo)
-    
-    # Check if we have any data
-    if(nrow(plot_data_demo) == 0) {
-      return(plotly_empty(type = "scatter", mode = "markers") %>%
-               layout(title = "No data available for the current selection."))
-    }
-    
-    # Create histogram
-    p <- ggplot(plot_data_demo, aes(x = age, fill = sex)) +
-      geom_histogram(binwidth = 1, position = "stack", alpha = 0.7,
-                     aes(text = paste(
-                       "Age:", age,
-                       "\nSex:", sex,
-                       "\nCount:", after_stat(count)
-                     ))) +
-      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
-      theme_minimal() +
-      theme(
-        text = element_text(family = "sans-serif"),
-        plot.title = element_text(hjust = 0.5, face = "bold")
-      ) +
-      labs(
-        title = "Age Distribution by Gender",
-        x = "Age (years)",
-        y = "Count",
-        fill = "Gender"
-      )
-    
-    ggplotly(p, tooltip = "text") %>%
-      layout(
-        showlegend = TRUE,
-        legend = list(x = 1.05, y = 0.5),
-        margin = list(r = 100)
-      )
-  })
+  # Combine selected datasets
+  combined_data <- bind_rows(selected_data) %>%
+    mutate(
+      # Ensure these columns exist and are properly formatted
+      age = as.numeric(age),
+      age_group = factor(age_group, levels = c("18-29", "30-44", "45-59", "60-74", "75+")),
+      sex = factor(sex, levels = c("Male", "Female"))
+    )
   
-  # Age groups distribution plot
-  output$age_groups_dist <- renderPlotly({
-    plot_data_demo <- demographics_data()
-    req(plot_data_demo)
-    
-    # Check if we have any data
-    if(nrow(plot_data_demo) == 0) {
-      return(plotly_empty(type = "scatter", mode = "markers") %>%
-               layout(title = "No data available for the current selection."))
-    }
-    
-    # Create bar plot
-    p <- ggplot(plot_data_demo, aes(x = age_group, fill = sex)) +
-      geom_bar(position = "dodge", alpha = 0.7,
-               aes(text = paste(
-                 "Age Group:", age_group,
-                 "\nSex:", sex,
-                 "\nCount:", after_stat(count)
-               ))) +
-      scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
-      theme_minimal() +
-      theme(
-        text = element_text(family = "sans-serif"),
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        axis.text.x = element_text(angle = 45, hjust = 1)
-      ) +
-      labs(
-        title = "Distribution by Age Group and Gender",
-        x = "Age Group",
-        y = "Count",
-        fill = "Gender"
-      )
-    
-    ggplotly(p, tooltip = "text") %>%
-      layout(
-        showlegend = TRUE,
-        legend = list(x = 1.05, y = 0.5),
-        margin = list(r = 100)
-      )
-  })
+  # Filter by age groups if selected
+  if(!is.null(input$demo_age_groups) && length(input$demo_age_groups) > 0) {
+    combined_data <- combined_data %>% 
+      filter(age_group %in% input$demo_age_groups)
+  }
   
+  # Apply custom groups if needed
+  if(length(custom_groups()) > 0) {
+    combined_data <- apply_custom_group(combined_data, custom_groups())
+  }
+  
+  combined_data
+})
+
+# Age distribution plot - UPDATED FUNCTION
+output$age_distribution <- renderPlotly({
+  plot_data_demo <- demographics_data()
+  req(plot_data_demo)
+  
+  # Verify required columns exist
+  if(!all(c("age", "sex") %in% names(plot_data_demo))) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Required columns missing in dataset."))
+  }
+  
+  # Check if we have any data
+  if(nrow(plot_data_demo) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No data available for the current selection."))
+  }
+  
+  # Create histogram with safe hover text
+  p <- ggplot(plot_data_demo, aes(x = age, fill = sex)) +
+    geom_histogram(binwidth = 1, position = "stack", alpha = 0.7) +
+    scale_fill_manual(values = c("Male" = "#87CEEB", "Female" = "#FFB6C1")) +
+    theme_minimal() +
+    theme(
+      text = element_text(family = "sans-serif"),
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    ) +
+    labs(
+      title = "Age Distribution by Gender",
+      x = "Age (years)",
+      y = "Count",
+      fill = "Gender"
+    )
+  
+  # Add tooltips manually in ggplotly
+  ggp <- ggplotly(p) %>%
+    layout(
+      showlegend = TRUE,
+      legend = list(x = 1.05, y = 0.5),
+      margin = list(r = 100)
+    )
+  
+  # Add tooltip text manually
+  for(i in 1:length(ggp$x$data)) {
+    ggp$x$data[[i]]$text <- paste(
+      "Age:", floor(ggp$x$data[[i]]$x),
+      "\nCount:", ggp$x$data[[i]]$y,
+      "\nGender:", if(grepl("Female", ggp$x$data[[i]]$name)) "Female" else "Male"
+    )
+  }
+  
+  return(ggp)
+})
+
+# Age groups distribution plot - UPDATED FUNCTION
+output$age_groups_dist <- renderPlotly({
+  plot_data_demo <- demographics_data()
+  req(plot_data_demo)
+  
+  # Verify required columns exist
+  if(!all(c("age_group", "sex") %in% names(plot_data_demo))) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Required columns missing in dataset."))
+  }
+  
+  # Check if we have any data
+  if(nrow(plot_data_demo) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No data available for the current selection."))
+  }
+  
+  # Create bar plot without tooltip in aes
+  p <- ggplot(plot_data_demo, aes(x = age_group, fill = sex)) +
+    geom_bar(position = "dodge", alpha = 0.7) +
+    scale_fill_manual(values = c("Male" = "#87CEEB", "Female" = "#FFB6C1")) +
+    theme_minimal() +
+    theme(
+      text = element_text(family = "sans-serif"),
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    labs(
+      title = "Distribution by Age Group and Gender",
+      x = "Age Group",
+      y = "Count",
+      fill = "Gender"
+    )
+  
+  # Add tooltips manually in ggplotly
+  ggp <- ggplotly(p) %>%
+    layout(
+      showlegend = TRUE,
+      legend = list(x = 1.05, y = 0.5),
+      margin = list(r = 100)
+    )
+  
+  # Add tooltip text manually
+  for(i in 1:length(ggp$x$data)) {
+    ggp$x$data[[i]]$text <- paste(
+      "Age Group:", ggp$x$data[[i]]$x,
+      "\nCount:", ggp$x$data[[i]]$y,
+      "\nGender:", if(grepl("Female", ggp$x$data[[i]]$name)) "Female" else "Male"
+    )
+  }
+  
+  return(ggp)
+})
+
   # Section 8: PCA Analysis -------------------------
   
   # Perform PCA analysis
