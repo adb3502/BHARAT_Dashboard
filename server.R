@@ -1,5 +1,33 @@
 # server.R
 
+library(shiny)
+library(shinydashboard)
+library(plotly)
+library(DT)
+library(shinyBS)
+library(shinyjs)
+library(dplyr)
+library(readr)
+library(stringr)
+library(effsize)  # For Cohen's d
+
+# Define any necessary helper functions and variables here
+# For example:
+# - loadSavedDatasets()
+# - saveDatasets()
+# - apply_custom_group()
+# - generate_mapping_template()
+# - process_external_data()
+# - validate_dataset()
+# - param_choices
+# - blood_params
+# - standard_age_groups
+# - grouping_choices
+# - color_by_choices
+# - color_schemes
+# - dataset_colors
+# - blood_metadata
+
 function(input, output, session) {
   # Section 1: Core State Management -------------------------
   
@@ -34,8 +62,9 @@ function(input, output, session) {
     switch(input$grouping,
            "age" = "age_group",
            "sex" = "sex",
-           "combined" = "group_combined",
-           "custom" = "custom_group")
+           "age_sex" = "group_combined",
+           "custom_age" = "custom_group",
+           "custom_age_sex" = "custom_group_combined")
   })
   
   # Common parameters reactive
@@ -84,8 +113,25 @@ function(input, output, session) {
             filter(age_group %in% input$selected_age_groups)
           
           # Apply custom groups if selected
-          if(input$grouping == "custom") {
-            filtered <- apply_custom_group(filtered, custom_groups())
+          if(input$grouping %in% c("custom_age", "custom_age_sex")) {
+            current_groups <- custom_groups()
+            if(length(current_groups) > 0) {
+              filtered <- apply_custom_group(filtered, current_groups)
+              
+              # Add combined grouping for custom groups and sex if needed, but only if custom_group exists
+              if(input$grouping == "custom_age_sex" && "custom_group" %in% names(filtered)) {
+                filtered <- filtered %>%
+                  mutate(custom_group_combined = paste(custom_group, sex))
+              } else if(input$grouping == "custom_age_sex") {
+                # If custom_group doesn't exist, log a warning and revert to a simpler grouping
+                warning("Custom groups not properly applied to the data.")
+                updateSelectInput(session, "grouping", selected = "age")
+              }
+            } else {
+              # If no custom groups exist, revert to a simpler grouping
+              updateSelectInput(session, "grouping", selected = "age")
+              showNotification("No custom groups defined. Reverting to standard age groups.", type = "warning")
+            }
           }
           
           return(filtered)
@@ -108,6 +154,34 @@ function(input, output, session) {
   
   # Section 3: UI Updates -------------------------
   
+  # Update color_by choices when custom groups are modified
+  observe({
+    current_groups <- custom_groups()
+    color_choices <- if(length(current_groups) > 0) {
+      c(
+        "None" = "none",
+        "Age Groups" = "age_group",
+        "Custom Age Groups" = "custom_age_group",
+        "Sex" = "sex",
+        "Dataset" = "dataset",
+        "Age (continuous)" = "age"
+      )
+    } else {
+      c(
+        "None" = "none",
+        "Age Groups" = "age_group",
+        "Sex" = "sex",
+        "Dataset" = "dataset",
+        "Age (continuous)" = "age"
+      )
+    }
+    
+    updateSelectInput(session, "color_by",
+                     choices = color_choices,
+                     selected = if(input$color_by == "custom_age_group" && length(current_groups) == 0) 
+                                "dataset" else input$color_by)
+  })
+
   # Show/hide common parameters checkbox
   observe({
     if(length(input$selected_datasets) > 1) {
@@ -121,7 +195,8 @@ function(input, output, session) {
   # Update parameter selection
   observe({
     updateSelectizeInput(session, "blood_param",
-                        choices = filtered_params())
+                        choices = filtered_params(),
+                        server = TRUE)
   })
   
   # Update dataset selection inputs
@@ -139,7 +214,8 @@ function(input, output, session) {
       updateCheckboxGroupInput(session, id,
                              choices = choices,
                              selected = if(id == "pca_datasets") "BHARAT" 
-                                      else names(datasets)[1])
+                                      else if(id == "selected_datasets") names(datasets)[1]
+                                      else "BHARAT")
     }
   })
   
@@ -147,13 +223,13 @@ function(input, output, session) {
   observe({
     req(input$stats_grouping)
     
-    plot_data <- prepare_plot_data()
-    req(plot_data)
+    plot_data_local <- prepare_plot_data()
+    req(plot_data_local)
     
     choices <- switch(input$stats_grouping,
-      "age" = as.character(plot_data$age_group),
-      "sex" = as.character(plot_data$sex),
-      "combined" = unique(plot_data$group_combined),
+      "age" = as.character(plot_data_local$age_group),
+      "sex" = as.character(plot_data_local$sex),
+      "combined" = unique(plot_data_local$group_combined),
       "custom" = names(custom_groups()),
       NULL
     )
@@ -191,6 +267,12 @@ function(input, output, session) {
     current_groups <- custom_groups()
     
     output$current_groups <- renderDT({
+      if(length(current_groups) == 0) {
+        return(datatable(data.frame(Group = character(0), Ranges = character(0)),
+                         options = list(dom = 't'),
+                         rownames = FALSE))
+      }
+      
       groups_df <- data.frame(
         Group = names(current_groups),
         Ranges = sapply(current_groups, paste, collapse = ", "),
@@ -202,7 +284,8 @@ function(input, output, session) {
                   pageLength = 5,
                   lengthChange = FALSE,
                   searching = FALSE,
-                  order = list(0, 'asc')
+                  ordering = FALSE,
+                  paging = FALSE
                 ))
     })
   })
@@ -230,18 +313,53 @@ function(input, output, session) {
     toggleModal(session, "groupModal", toggle = "show")
   })
 
+  # Synchronize grouping and color selection for custom groups
+  observeEvent(input$grouping, {
+    if(input$grouping %in% c("custom_age", "custom_age_sex")) {
+      # Check if we have custom groups
+      current_groups <- custom_groups()
+      if(length(current_groups) == 0) {
+        showNotification("Please create custom age groups first", type = "warning")
+        updateSelectInput(session, "grouping", selected = "age")
+      }
+    }
+  })
+
+  # Update color choices when grouping changes
+  observeEvent(input$grouping, {
+    if(input$grouping %in% c("custom_age", "custom_age_sex")) {
+      updateSelectInput(session, "color_by",
+                       selected = "custom_age_group")
+    } else if(input$color_by == "custom_age_group") {
+      updateSelectInput(session, "color_by",
+                       selected = "dataset")
+    }
+  })
+
+  # Update grouping when custom groups are added or removed
+  observeEvent(custom_groups(), {
+    current_groups <- custom_groups()
+    if(length(current_groups) == 0 && input$grouping %in% c("custom_age", "custom_age_sex")) {
+      updateSelectInput(session, "grouping", selected = "age")
+    }
+  })
+
   # Section 5: Overview Tab Outputs -------------------------
   
   # Overview statistics
   output$dataset_stats <- renderUI({
     datasets <- integrated_datasets_rv()
     
+    if(length(datasets) == 0) {
+      return(HTML("<p>No datasets integrated yet.</p>"))
+    }
+    
     total_samples <- sum(sapply(datasets, function(x) n_distinct(x$participant_id)))
     total_params <- length(blood_params)
     
     # Age range across all datasets
     all_ages <- do.call(c, lapply(datasets, function(x) x$age))
-    age_range <- sprintf("%d-%d", floor(min(all_ages)), ceiling(max(all_ages)))
+    age_range <- sprintf("%d-%d", floor(min(all_ages, na.rm = TRUE)), ceiling(max(all_ages, na.rm = TRUE)))
     
     # Gender distribution
     all_sex <- do.call(c, lapply(datasets, function(x) x$sex))
@@ -254,7 +372,8 @@ function(input, output, session) {
           p(sprintf("Parameters: %d", total_params)),
           p(sprintf("Age Range: %s years", age_range)),
           p(sprintf("Gender Distribution: %d Male, %d Female", 
-                   sex_dist["Male"], sex_dist["Female"]))
+                   ifelse("Male" %in% names(sex_dist), sex_dist["Male"], 0),
+                   ifelse("Female" %in% names(sex_dist), sex_dist["Female"], 0)))
       )
     )
   })
@@ -262,6 +381,11 @@ function(input, output, session) {
   # Total samples plot
   output$total_samples_plot <- renderPlotly({
     datasets <- integrated_datasets_rv()
+    
+    if(length(datasets) == 0) {
+      return(plotly_empty(type = "scatter", mode = "markers") %>%
+               layout(title = "No datasets available for plotting."))
+    }
     
     data <- map_df(names(datasets), ~{
       data <- datasets[[.x]]
@@ -280,365 +404,322 @@ function(input, output, session) {
         axis.text.x = element_text(angle = 45, hjust = 1),
         plot.title = element_text(hjust = 0.5)
       ) +
-      labs(title = "Total Samples per Dataset")
+      labs(title = "Total Samples per Dataset",
+           x = "Dataset",
+           y = "Number of Samples",
+           fill = "Dataset")
     
     ggplotly(p)
   })
   
-  # Dataset overview table
-  output$overview_datasets_table <- renderDT({
-    datasets <- integrated_datasets_rv()
-    
-    map_df(names(datasets), ~{
-      data <- datasets[[.x]]
-      tibble(
-        Dataset = .x,
-        `Total Samples` = n_distinct(data$participant_id),
-        `Age Range` = sprintf("%d-%d", floor(min(data$age)), ceiling(max(data$age))),
-        `Male` = sum(data$sex == "Male"),
-        `Female` = sum(data$sex == "Female"),
-        Parameters = ncol(data) - 6  # Subtract metadata columns
-      )
-    }) %>%
-      datatable(options = list(
-        pageLength = 10,
-        scrollX = TRUE,
-        dom = 'tp'
-      ))
+
+# Dataset overview table
+output$overview_datasets_table <- renderDT({
+  datasets <- integrated_datasets_rv()
+  
+  if(length(datasets) == 0) {
+    return(datatable(data.frame(Message = "No datasets integrated yet."),
+                     options = list(dom = 't'),
+                     rownames = FALSE))
+  }
+  
+  # Create summary table
+  summary_table <- map_df(names(datasets), ~{
+    data <- datasets[[.x]]
+    tibble(
+      Dataset = .x,
+      `Total Samples` = n_distinct(data$participant_id),
+      `Age Range` = sprintf("%d-%d", floor(min(data$age, na.rm = TRUE)), ceiling(max(data$age, na.rm = TRUE))),
+      `Male` = sum(data$sex == "Male", na.rm = TRUE),
+      `Female` = sum(data$sex == "Female", na.rm = TRUE),
+      Parameters = ncol(data) - 6  # Assuming 6 metadata columns
+    )
   })
+  
+  # Compute the maximum counts for 'Male' and 'Female' across all datasets
+  max_male <- max(summary_table$Male, na.rm = TRUE)
+  max_female <- max(summary_table$Female, na.rm = TRUE)
+  
+  # Render the datatable with formatting
+  datatable(summary_table, options = list(
+    pageLength = 10,
+    scrollX = TRUE,
+    dom = 'tp'
+  )) %>%
+    formatStyle(
+      columns = c("Male", "Female"),
+      backgroundColor = styleColorBar(c(0, max(c(max_male, max_female))), 'lightblue'),
+      background = "white",
+      color = 'black'
+    )
+})
+
   
   # Section 6: Blood Parameter Visualization -------------------------
+
+
+# Reactive expression to prepare plot and stats data
+plot_data <- reactive({
+  req(input$blood_param, input$selected_datasets, input$selected_age_groups)
+  prepare_plot_data()
+})
+
+# Add validation for custom groups
+validate_custom_groups <- reactive({
+  if(input$color_by == "custom_age_group") {
+    current_groups <- custom_groups()
+    if(length(current_groups) == 0) {
+      showNotification("No custom age groups defined. Please create custom groups first.", 
+                      type = "warning")
+      updateSelectInput(session, "color_by", selected = "dataset")
+      return(FALSE)
+    }
+    
+    data <- plot_data()
+    if(!("custom_group" %in% names(data))) {
+      showNotification("Custom groups not properly applied to the data. Please try creating the groups again.", 
+                      type = "warning")
+      updateSelectInput(session, "color_by", selected = "dataset")
+      return(FALSE)
+    }
+  }
+  return(TRUE)
+})
+
+# Render the Blood Parameters plot
+# Render the Blood Parameters plot
+output$blood_dist <- renderPlotly({
+  req(plot_data(), input$color_by)
   
-  # Blood parameter visualization
-  output$blood_dist <- renderPlotly({
-    req(input$blood_param, input$grouping, input$color_by)
-    
-    # Get data
-    plot_df <- prepare_plot_data()
-    req(plot_df)
-    
-    # Check if selected parameter is available
-    if(!input$blood_param %in% names(plot_df)) {
-      return(ggplotly(ggplot() + 
-        annotate("text", x = 0.5, y = 0.5, 
-                label = "Selected parameter not available in current dataset selection",
-                size = 6) +
-        theme_void()))
-    }
-    
-    # Get current variable
-    current_var <- input$blood_param
-    
-    # Determine group variable
-    group_var <- switch(input$grouping,
-      "age" = "age_group",
-      "sex" = "sex",
-      "combined" = "group_combined",
-      "custom" = "custom_group",
-      "custom_combined" = "custom_group_sex",
-      "age_group"  # default case
+  # Get the data
+  data <- plot_data()
+  
+  # Check if the selected parameter exists
+  if(!input$blood_param %in% names(data)) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Selected parameter not available in current dataset selection."))
+  }
+  
+  # Determine grouping variable
+  group_var <- get_group_var()
+  
+  # Ensure grouping variable exists
+  if(!group_var %in% names(data)) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Grouping variable not found in the data."))
+  }
+  
+  # Convert selected parameter to numeric and create initial grouping
+  data <- data %>% 
+    mutate(
+      y_val = as.numeric(!!sym(input$blood_param)),
+      group = factor(!!sym(group_var))
     )
-    
-    # Apply custom grouping if needed
-    if(input$grouping %in% c("custom", "custom_combined")) {
-      plot_df <- apply_custom_group(plot_df, custom_groups())
-      if(nrow(plot_df) == 0) {
-        return(ggplotly(ggplot() + 
-          annotate("text", x = 0.5, y = 0.5, 
-                  label = "No data available for the selected custom groups",
-                  size = 6) +
-          theme_void()))
-      }
-    }
-    
-    # Prepare data for plotting
-    plot_df <- plot_df %>%
-      mutate(
-        group = factor(!!sym(group_var)),  # Ensure group is a factor
-        y_val = !!sym(current_var),
-        point_color = case_when(
-          input$color_by == "dataset" ~ dataset,
-          input$color_by == "age_group" ~ as.character(age_group),
-          input$color_by == "sex" ~ as.character(sex),
-          input$color_by == "age" ~ as.character(round(age)),
-          TRUE ~ as.character(!!sym(group_var))
-        )
-      ) %>%
-      drop_na(group, y_val)
-    
-    # Check if we have any data after filtering
-    if(nrow(plot_df) == 0) {
-      return(ggplotly(ggplot() + 
-        annotate("text", x = 0.5, y = 0.5, 
-                label = "No data available for the current selection",
-                size = 6) +
-        theme_void()))
-    }
-    
-    # Set up aesthetics
-    aes_mapping <- aes(
-      x = group, 
-      y = y_val,
-      color = point_color,
-      text = paste(
-        "ID:", participant_id,
-        "\nValue:", round(y_val, 2),
-        "\nGroup:", group,
-        "\nDataset:", dataset,
-        if(input$color_by == "age") paste("\nAge:", age) else ""
-      )
-    )
-    
-    # Get colors
-    n_colors <- length(unique(plot_df$point_color))
-    colors <- if(input$color_by == "dataset") {
-      dataset_colors[unique(plot_df$dataset)]
-    } else if(input$color_by == "age") {
-      colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
+  
+  # Check if conversion was successful
+  if(all(is.na(data$y_val))) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Selected parameter has no numeric data."))
+  }
+
+  # Now handle coloring separately using base R to avoid NSE issues
+  data$point_color <- as.character(data$group)  # Default coloring
+
+  # Only attempt to use a column for coloring if it actually exists in the data
+  if (input$color_by == "dataset") {
+    data$point_color <- as.character(data$dataset)
+  } else if (input$color_by == "age_group") {
+    data$point_color <- as.character(data$age_group)
+  } else if (input$color_by == "sex") {
+    data$point_color <- as.character(data$sex)
+  } else if (input$color_by == "age") {
+    data$point_color <- as.character(data$age)
+  } else if (input$color_by == "custom_age_group") {
+    if ("custom_group" %in% names(data)) {
+      data$point_color <- as.character(data$custom_group)
     } else {
-      get_color_palette(input$color_scheme, n_colors)
+      # Fallback if custom_group doesn't exist
+      data$point_color <- as.character(data$dataset)
+      showNotification("Custom groups not available. Using dataset colors instead.", type = "warning")
     }
-    
-    # Create base plot
-    p <- ggplot(plot_df, aes_mapping) +
-      theme_minimal(base_size = 14) +
-      theme(
-        text = element_text(family = "sans-serif"),
-        axis.text = element_text(family = "sans-serif", size = 12),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid.minor = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5, size = 16, face = "bold", family = "sans-serif"),
-        legend.title = element_text(size = 12, family = "sans-serif"),
-        legend.text = element_text(size = 10, family = "sans-serif")
-      ) +
-      labs(
-        title = str_to_title(str_replace_all(current_var, "_", " ")),
-        x = str_to_title(str_replace_all(group_var, "_", " ")),
-        y = NULL,
-        color = str_to_title(str_replace_all(
-          if(input$color_by == "age") "Age" else 
-            if(input$color_by != "none") input$color_by else group_var, 
-          "_", " "
-        ))
-      )
-    
-    # Add appropriate scale
-    if(input$color_by == "age") {
-      p <- p + scale_color_gradientn(colors = colors)
-    } else {
-      p <- p + scale_color_manual(values = colors)
-    }
-    
-    # Add plot elements based on type
-    p <- switch(input$plot_type,
-      "box" = p + 
-        {if(input$color_by != "none" && input$color_by != group_var)
-          geom_boxplot(aes(color = NULL), alpha = 0.3, width = 0.7, outlier.shape = NA)
-        else
-          geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA)} +
-        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-      
-      "violin" = p + 
-        {if(input$color_by != "none" && input$color_by != group_var)
-          geom_violin(aes(fill = NULL), alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))
-        else
-          geom_violin(alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))} +
-        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-      
-      # Default to scatter
-      p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
+  }
+  
+  # Remove rows with missing values in essential columns
+  data <- data %>%
+    drop_na(group, y_val, point_color)
+  
+  # Check if we have any data after filtering
+  if(nrow(data) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No data available after filtering."))
+  }
+
+  # Define color palette based on user selection
+  if(input$color_by == "age") {
+    # For continuous age, use gradient
+    colors <- colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
+  } else if(input$color_by == "dataset") {
+    # For datasets, use predefined colors
+    colors <- dataset_colors[levels(as.factor(data$point_color))]
+  } else {
+    # For categorical variables, use selected color scheme
+    n_colors <- length(levels(as.factor(data$point_color)))
+    colors <- get_color_palette(input$color_scheme, n_colors)
+    names(colors) <- levels(as.factor(data$point_color))
+  }
+  
+  # Define tooltip content
+  data <- data %>% mutate(
+    tooltip = paste(
+      "ID:", participant_id,
+      "\nValue:", round(y_val, 2),
+      "\nGroup:", group,
+      "\nDataset:", dataset,
+      if(input$color_by == "age") paste("\nAge:", age) else ""
     )
-    
-    # Add statistics if requested
-    if(input$show_stats) {
-      # Perform ANOVA
-      aov_result <- aov(y_val ~ group, data = plot_df)
-      tukey_result <- TukeyHSD(aov_result)
-      
-      # Format p-values for display
-      p_values <- data.frame(comparison = rownames(tukey_result$group),
-                            p.adj = tukey_result$group[,"p adj"]) %>%
-        mutate(
-          significance = case_when(
-            p.adj < 0.001 ~ "***",
-            p.adj < 0.01 ~ "**",
-            p.adj < 0.05 ~ "*",
-            TRUE ~ "ns"
-          ),
-          y_pos = max(plot_df$y_val) + 
-            seq(0, length(comparison)-1) * diff(range(plot_df$y_val))/20
-        )
-    }
-    
-    # Get reference ranges
-    ref_range <- blood_metadata %>%
-      filter(testname == str_replace_all(current_var, "_", "-")) %>%
-      select(testminrangevalue, testmaxrangevalue)
-    
-    # Set up aesthetics
-    aes_mapping <- aes(
-      x = group, 
-      y = y_val,
-      color = point_color,
-      text = paste(
-        "ID:", participant_id,
-        "\nValue:", round(y_val, 2),
-        "\nGroup:", group,
-        "\nDataset:", dataset,
-        if(input$color_by == "age") paste("\nAge:", age) else ""
+  )
+  
+  # Create the base plot
+  p <- ggplot(data, aes(x = group, y = y_val, text = tooltip)) +
+    theme_minimal(base_size = 14) +
+    theme(
+      text = element_text(family = "sans-serif"),
+      axis.text = element_text(size = 12),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.minor = element_blank(),
+      legend.position = "right",
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10)
+    ) +
+    labs(
+      title = str_to_title(str_replace_all(input$blood_param, "_", " ")),
+      x = str_to_title(str_replace_all(group_var, "_", " ")),
+      y = NULL,
+      color = str_to_title(
+        if (input$color_by == "age") "Age" else 
+          if (input$color_by != "none") str_replace_all(input$color_by, "_", " ") else 
+            str_replace_all(group_var, "_", " ")
       )
     )
-    
-    # Get colors
-    n_colors <- length(unique(plot_df$point_color))
-    colors <- if(input$color_by == "dataset") {
-      dataset_colors[unique(plot_df$dataset)]
-    } else if(input$color_by == "age") {
-      colorRampPalette(c("#FFB6C1", "#4682B4"))(100)
-    } else {
-      get_color_palette(input$color_scheme, n_colors)
+  
+  # Add color aesthetics based on the type of color variable
+  if(input$color_by == "age") {
+    p <- p + aes(color = point_color) + 
+      scale_color_gradientn(colors = colors)
+  } else if(input$color_by != "none") {
+    p <- p + aes(color = point_color) + 
+      scale_color_manual(values = colors)
+  }
+  
+  # Add plot type specific layers
+  p <- switch(input$plot_type,
+    "box" = p + 
+      geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA) +
+      geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+    "violin" = p + 
+      geom_violin(alpha = 0.3, trim = FALSE) +
+      geom_jitter(width = 0.2, alpha = 0.7, size = 3),
+    # Default to scatter plot
+    p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
+  )
+  
+  # Add reference lines if requested and available
+  ref_range <- blood_metadata %>%
+    filter(testname == str_replace_all(input$blood_param, "_", "-")) %>%
+    select(testminrangevalue, testmaxrangevalue)
+  
+  if (input$show_ref && nrow(ref_range) > 0) {
+    if (!is.na(ref_range$testminrangevalue)) {
+      p <- p + geom_hline(yintercept = ref_range$testminrangevalue,
+                          linetype = "dashed", color = "grey50", alpha = 0.5)
     }
-    
-    # Create base plot
-    p <- ggplot(plot_df, aes_mapping) +
-      theme_minimal(base_size = 14) +
-      theme(
-        text = element_text(family = "sans-serif"),
-        axis.text = element_text(family = "sans-serif", size = 12),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        panel.grid.minor = element_blank(),
-        legend.position = "right",
-        plot.title = element_text(hjust = 0.5, size = 16, face = "bold", family = "sans-serif"),
-        legend.title = element_text(size = 12, family = "sans-serif"),
-        legend.text = element_text(size = 10, family = "sans-serif")
-      ) +
-      labs(
-        title = str_to_title(str_replace_all(current_var, "_", " ")),
-        x = str_to_title(str_replace_all(group_var, "_", " ")),
-        y = NULL,
-        color = str_to_title(str_replace_all(
-          if(input$color_by == "age") "Age" else 
-            if(input$color_by != "none") input$color_by else group_var, 
-          "_", " "
-        ))
-      )
-    
-    # Add appropriate scale
-    if(input$color_by == "age") {
-      p <- p + scale_color_gradientn(colors = colors)
-    } else {
-      p <- p + scale_color_manual(values = colors)
+    if (!is.na(ref_range$testmaxrangevalue)) {
+      p <- p + geom_hline(yintercept = ref_range$testmaxrangevalue,
+                          linetype = "dashed", color = "grey50", alpha = 0.5)
     }
-    
-    # Add plot elements based on type
-    p <- switch(input$plot_type,
-      "box" = p + 
-        {if(input$color_by != "none" && input$color_by != group_var)
-          geom_boxplot(aes(color = NULL), alpha = 0.3, width = 0.7, outlier.shape = NA)
-        else
-          geom_boxplot(alpha = 0.3, width = 0.7, outlier.shape = NA)} +
-        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-      
-      "violin" = p + 
-        {if(input$color_by != "none" && input$color_by != group_var)
-          geom_violin(aes(fill = NULL), alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))
-        else
-          geom_violin(alpha = 0.3, trim = FALSE, draw_quantiles = c(0.25, 0.5, 0.75))} +
-        geom_jitter(width = 0.2, alpha = 0.7, size = 3),
-      
-      # Default to scatter
-      p + geom_jitter(width = 0.2, alpha = 0.7, size = 3)
+  }
+  
+  # Convert ggplot to plotly
+  ggplotly(p, tooltip = "text") %>%
+    layout(
+      font = list(family = "sans-serif"),
+      hoverlabel = list(font = list(family = "sans-serif")),
+      showlegend = TRUE,
+      margin = list(b = 100, t = 50, r = 100, l = 80)
+    ) %>%
+    config(displayModeBar = TRUE)
+})
+
+# Render statistics below the Blood Parameters plot
+output$stats_info <- renderUI({
+  # Check if statistics should be shown
+  req(input$show_stats)
+  
+  # Get the data used for plotting
+  data <- plot_data()
+  
+  # Check if data is available
+  req(data)
+  
+  # Determine the grouping variable
+  group_var <- get_group_var()
+  
+  # Verify that the grouping variable exists
+  if(!group_var %in% names(data)) {
+    return(HTML("<p>Grouping variable not found in the data.</p>"))
+  }
+  
+  # Ensure the grouping variable is a factor
+  data <- data %>%
+    mutate(group = factor(!!sym(group_var)))
+  
+  # Compute basic statistics: count, mean, median, SD per group
+  stats <- data %>%
+    group_by(group) %>%
+    summarise(
+      count = n(),
+      mean = mean(y_val, na.rm = TRUE),
+      median = median(y_val, na.rm = TRUE),
+      sd = sd(y_val, na.rm = TRUE)
     )
+  
+  # Perform ANOVA if there are more than one group
+  if(n_distinct(data$group) > 1) {
+    aov_result <- tryCatch({
+      aov_formula <- as.formula(paste("y_val ~ group"))
+      aov(aov_formula, data = data)
+    }, error = function(e) {
+      return(NULL)
+    })
     
-    # Add statistics if requested
-    if(input$show_stats && exists("p_values")) {
-      # Add significance bars
-      for(i in seq_len(nrow(p_values))) {
-        groups <- strsplit(as.character(p_values$comparison[i]), "-")[[1]]
-        x1 <- which(levels(plot_df$group) == groups[1])
-        x2 <- which(levels(plot_df$group) == groups[2])
-        
-        if(p_values$significance[i] != "ns") {
-          p <- p + 
-            annotate("segment",
-                    x = x1, xend = x2,
-                    y = p_values$y_pos[i], yend = p_values$y_pos[i],
-                    color = "black") +
-            annotate("text",
-                    x = mean(c(x1, x2)), 
-                    y = p_values$y_pos[i],
-                    label = p_values$significance[i],
-                    vjust = -0.5)
-        }
-      }
+    if(!is.null(aov_result)) {
+      anova_summary <- summary(aov_result)
+      p_value <- anova_summary[[1]]["group", "Pr(>F)"]
+      aov_text <- sprintf("ANOVA: F(%d, %d) = %.2f, p = %.3e",
+                          anova_summary[[1]]["group", "Df"],
+                          anova_summary[[1]]["Residuals", "Df"],
+                          anova_summary[[1]]["group", "F value"],
+                          anova_summary[[1]]["group", "Pr(>F)"])
+    } else {
+      aov_text <- "ANOVA could not be performed."
     }
-    
-    # Add stats box if requested
-    if(input$show_stats) {
-      stats_summary <- plot_df %>%
-        group_by(group) %>%
-        summarise(
-          n = n(),
-          mean = mean(y_val, na.rm = TRUE),
-          sd = sd(y_val, na.rm = TRUE),
-          se = sd/sqrt(n),
-          ci_lower = mean - qt(0.975, n-1)*se,
-          ci_upper = mean + qt(0.975, n-1)*se,
-          .groups = "drop"
-        )
-      
-      # Add ANOVA results
-      anova_results <- summary(aov_result)
-      
-      stats_text <- sprintf(
-        "Statistics Summary:\n\nANOVA: F(%d,%d) = %.2f, p = %.3e\n\n",
-        anova_results[[1]]$Df[1], anova_results[[1]]$Df[2],
-        anova_results[[1]]$`F value`[1], anova_results[[1]]$`Pr(>F)`[1]
-      )
-      
-      # Add group summaries
-      stats_text <- paste0(stats_text, "Group Summaries:\n",
-                          paste(apply(stats_summary, 1, function(x) {
-                            sprintf("%s: n=%d, mean=%.2f, SD=%.2f, 95%%CI=[%.2f,%.2f]",
-                                  as.character(x["group"]), 
-                                  as.integer(x["n"]), 
-                                  as.numeric(x["mean"]), 
-                                  as.numeric(x["sd"]),
-                                  as.numeric(x["ci_lower"]), 
-                                  as.numeric(x["ci_upper"]))
-                          }), collapse = "\n"))
-      
-      p <- p + 
-        annotate("text",
-                x = Inf, y = -Inf,
-                label = stats_text,
-                hjust = 1, vjust = 0,
-                size = 3, family = "sans-serif")
-    }
-    
-    # Add reference ranges if selected
-    if(input$show_ref && nrow(ref_range) > 0) {
-      if(!is.na(ref_range$testminrangevalue)) {
-        p <- p + geom_hline(yintercept = ref_range$testminrangevalue,
-                           linetype = "dashed", color = "grey50", alpha = 0.5)
-      }
-      if(!is.na(ref_range$testmaxrangevalue)) {
-        p <- p + geom_hline(yintercept = ref_range$testmaxrangevalue,
-                           linetype = "dashed", color = "grey50", alpha = 0.5)
-      }
-    }
-    
-    # Convert to plotly
-    ggplotly(p, tooltip = "text") %>%
-      layout(
-        font = list(family = "sans-serif"),
-        hoverlabel = list(font = list(family = "sans-serif")),
-        showlegend = TRUE,
-        margin = list(b = 100)
-      ) %>%
-      config(displayModeBar = TRUE)
-  })
+  } else {
+    aov_text <- "Only one group present. ANOVA not applicable."
+  }
+  
+  # Create HTML content
+  html_content <- paste(
+    "<h4>Basic Statistics:</h4>",
+    renderTable(stats, rownames = FALSE, striped = TRUE, bordered = TRUE, hover = TRUE),
+    "<h4>ANOVA Result:</h4>",
+    aov_text,
+    sep = "<br>"
+  )
+  
+  HTML(html_content)
+})
+
   
   # Section 7: Demographic Plots -------------------------
   
@@ -669,26 +750,23 @@ function(input, output, session) {
   
   # Age distribution plot
   output$age_distribution <- renderPlotly({
-    plot_data <- demographics_data()
-    req(plot_data)
+    plot_data_demo <- demographics_data()
+    req(plot_data_demo)
     
     # Check if we have any data
-    if(nrow(plot_data) == 0) {
-      return(ggplotly(ggplot() + 
-        annotate("text", x = 0.5, y = 0.5, 
-                label = "No data available for the current selection",
-                size = 6) +
-        theme_void()))
+    if(nrow(plot_data_demo) == 0) {
+      return(plotly_empty(type = "scatter", mode = "markers") %>%
+               layout(title = "No data available for the current selection."))
     }
     
     # Create histogram
-    p <- ggplot(plot_data, aes(x = age, fill = sex)) +
+    p <- ggplot(plot_data_demo, aes(x = age, fill = sex)) +
       geom_histogram(binwidth = 1, position = "stack", alpha = 0.7,
-                    aes(text = paste(
-                      "Age:", age,
-                      "\nSex:", sex,
-                      "\nCount:", after_stat(count)
-                    ))) +
+                     aes(text = paste(
+                       "Age:", age,
+                       "\nSex:", sex,
+                       "\nCount:", after_stat(count)
+                     ))) +
       scale_fill_manual(values = c("Male" = "#FFB6C1", "Female" = "#87CEEB")) +
       theme_minimal() +
       theme(
@@ -712,20 +790,17 @@ function(input, output, session) {
   
   # Age groups distribution plot
   output$age_groups_dist <- renderPlotly({
-    plot_data <- demographics_data()
-    req(plot_data)
+    plot_data_demo <- demographics_data()
+    req(plot_data_demo)
     
     # Check if we have any data
-    if(nrow(plot_data) == 0) {
-      return(ggplotly(ggplot() + 
-        annotate("text", x = 0.5, y = 0.5, 
-                label = "No data available for the current selection",
-                size = 6) +
-        theme_void()))
+    if(nrow(plot_data_demo) == 0) {
+      return(plotly_empty(type = "scatter", mode = "markers") %>%
+               layout(title = "No data available for the current selection."))
     }
     
     # Create bar plot
-    p <- ggplot(plot_data, aes(x = age_group, fill = sex)) +
+    p <- ggplot(plot_data_demo, aes(x = age_group, fill = sex)) +
       geom_bar(position = "dodge", alpha = 0.7,
                aes(text = paste(
                  "Age Group:", age_group,
@@ -787,9 +862,10 @@ function(input, output, session) {
     # Update color by choices with parameters
     updateSelectInput(session, "pca_color",
                      choices = c(
-                       "Dataset" = "dataset",
+                       "None" = "none",
                        "Age Groups" = "age_group",
                        "Sex" = "sex",
+                       "Dataset" = "dataset",
                        "Age" = "age",
                        setNames(param_cols, str_to_title(str_replace_all(param_cols, "_", " ")))
                      ))
@@ -892,8 +968,11 @@ function(input, output, session) {
         # Get unique values for proper color mapping
         unique_values <- unique(color_values)
         n_colors <- length(unique_values)
-        color_palette <- brewer.pal(max(3, min(9, n_colors)), "Set1")
-        if(n_colors > 9) color_palette <- colorRampPalette(color_palette)(n_colors)
+        if(n_colors <= 8){
+          color_palette <- RColorBrewer::brewer.pal(n_colors, "Set2")
+        } else {
+          color_palette <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_colors)
+        }
         color_scale <- scale_color_manual(values = setNames(color_palette, unique_values))
       }
     }
@@ -960,7 +1039,8 @@ function(input, output, session) {
       ) +
       labs(
         title = "Scree Plot",
-        y = "Variance Explained (%)"
+        y = "Variance Explained (%)",
+        x = "Principal Components"
       )
     
     ggplotly(p)
@@ -991,10 +1071,8 @@ function(input, output, session) {
                 aes(x = reorder(param_name, abs(loading)),
                     y = loading,
                     fill = direction,
-                    text = paste(
-                      "Parameter:", param_name,
-                      "\nLoading:", round(loading, 3)
-                    ))) +
+                    text = paste("Parameter:", param_name,
+                               "\nLoading:", round(loading, 3)))) +
       geom_bar(stat = "identity", alpha = 0.7) +
       scale_fill_manual(values = c("Positive" = "#4CAF50", "Negative" = "#FF5722")) +
       coord_flip() +
@@ -1015,28 +1093,6 @@ function(input, output, session) {
       layout(
         margin = list(l = 150),  # Increase left margin for parameter names
         showlegend = TRUE
-      )
-  })
-  
-  # Add variable quality table
-  output$var_quality <- renderDT({
-    req(pca_state$results)
-    
-    var_quality <- assess_var_quality(pca_state$results)
-    
-    datatable(var_quality,
-              options = list(pageLength = 10, scrollX = TRUE)) %>%
-      formatRound("total_cos2", digits = 3) %>%
-      formatStyle(
-        'quality',
-        backgroundColor = styleEqual(
-          c("High", "Medium", "Low"),
-          c('#4CAF50', '#FFC107', '#FF5722')
-        ),
-        color = styleEqual(
-          c("High", "Medium", "Low"),
-          c('white', 'black', 'white')
-        )
       )
   })
   
@@ -1212,7 +1268,7 @@ function(input, output, session) {
         
         # Reset states
         integration_state$processed_data <- NULL
-        integration_state$validation_result$valid <- FALSE
+        integration_state$validation_result <- NULL
         
       }, error = function(e) {
         showNotification(
@@ -1266,18 +1322,24 @@ function(input, output, session) {
   calculate_statistics <- reactive({
     req(group_comparison$group1, group_comparison$group2)
     
-    plot_data <- prepare_plot_data()
-    req(plot_data)
+    plot_data_local <- prepare_plot_data()
+    req(plot_data_local)
     
     group_var <- get_group_var()
     
     # Filter data for selected groups
-    analysis_data <- plot_data %>%
+    analysis_data <- plot_data_local %>%
       filter(!!sym(group_var) %in% c(group_comparison$group1, group_comparison$group2))
+    
+    # Check if there are at least two groups
+    if(n_distinct(analysis_data[[group_var]]) < 2) {
+      showNotification("At least two groups are required for statistical comparison.", type = "error")
+      return(NULL)
+    }
     
     # Get numeric parameters
     numeric_cols <- names(analysis_data)[sapply(analysis_data, is.numeric)]
-    numeric_cols <- setdiff(numeric_cols, c("age"))
+    numeric_cols <- setdiff(numeric_cols, c("age"))  # Exclude 'age' if not needed
     
     # Calculate statistics for each parameter
     results <- map_df(numeric_cols, function(param) {
@@ -1289,7 +1351,7 @@ function(input, output, session) {
         )
         
         # Calculate effect size (Cohen's d)
-        ef_size <- cohen.d(analysis_data[[param]] ~ !!sym(group_var), 
+        ef_size <- cohen.d(analysis_data[[param]] ~ analysis_data[[group_var]], 
                           data = analysis_data)
         
         tibble(
@@ -1372,10 +1434,10 @@ function(input, output, session) {
     current_param <- isolate(input$blood_param)
     new_choices <- filtered_params()
     
-    # Update choices but keep current selection regardless
+    # Update choices but keep current selection if possible
     updateSelectizeInput(session, "blood_param",
                         choices = new_choices,
-                        selected = current_param,
+                        selected = if(current_param %in% new_choices) current_param else new_choices[1],
                         server = TRUE)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
   

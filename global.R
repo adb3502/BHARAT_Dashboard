@@ -46,28 +46,75 @@ standardize_age_group <- function(age) {
 
 #' Custom group functions
 apply_custom_group <- function(data, custom_groups) {
-  if (length(custom_groups) == 0) {
-    data$custom_group <- NA
-    return(data)
+  # Validate inputs immediately with clear return path
+  if (!is.data.frame(data)) {
+    warning("Input must be a data frame")
+    return(data)  # Return original data to avoid breaking the pipeline
   }
   
-  # Create cases for case_when using the order of the custom groups
-  cases <- lapply(names(custom_groups), function(group_name) {
-    quo(age_group %in% !!custom_groups[[group_name]] ~ !!group_name)
+  if (!is.list(custom_groups) || length(custom_groups) == 0) {
+    warning("No custom groups provided")
+    return(data)  # Return original data
+  }
+  
+  if (!"age_group" %in% names(data)) {
+    warning("Data frame must contain 'age_group' column")
+    return(data)  # Return original data
+  }
+  
+  # Wrap everything in tryCatch to prevent crashes
+  result <- tryCatch({
+    # Create cases for case_when using the order of the custom groups
+    cases <- lapply(names(custom_groups), function(group_name) {
+      quo(age_group %in% !!custom_groups[[group_name]] ~ !!group_name)
+    })
+    
+    # Add custom group column, ensuring order is preserved
+    result <- data %>%
+      mutate(
+        custom_group = case_when(!!!cases, TRUE ~ NA_character_),
+        # Force factor levels in the exact order of custom_groups names
+        custom_group = factor(custom_group, levels = names(custom_groups))
+      )
+    
+    # Check if any custom groups were successfully applied
+    if (all(is.na(result$custom_group))) {
+      warning("No age_group values matched any custom groups")
+      return(data)  # Return original data
+    }
+    
+    # Add combined group column if sex is available
+    if ("sex" %in% names(data)) {
+      # Create combined levels in the exact order: first by custom group, then by sex
+      combined_levels <- expand.grid(
+        custom_group = names(custom_groups),
+        sex = c("Male", "Female"),
+        stringsAsFactors = FALSE
+      ) %>%
+      arrange(match(custom_group, names(custom_groups)), sex) %>%
+      mutate(combined = paste(custom_group, sex)) %>%
+      pull(combined)
+      
+      result <- result %>%
+        mutate(
+          custom_group_combined = if_else(
+            !is.na(custom_group),
+            paste(custom_group, sex),
+            NA_character_
+          ),
+          # Force factor levels in the exact order we created
+          custom_group_combined = factor(custom_group_combined, levels = combined_levels)
+        )
+    }
+    
+    return(result)
+    
+  }, error = function(e) {
+    warning(paste("Error applying custom groups:", e$message))
+    return(data)  # Return original data on error
   })
   
-  # Apply grouping and convert to factor with levels in original order
-  data %>%
-    mutate(
-      custom_group = case_when(!!!cases),
-      custom_group = factor(custom_group, levels = names(custom_groups)),
-      custom_group_sex = if("custom_combined" %in% names(custom_groups)) {
-        paste(custom_group, sex)
-      } else {
-        NA
-      }
-    ) %>%
-    filter(!is.na(custom_group))  # Remove points not in any custom group
+  return(result)
 }
 
 #' PCA Analysis Functions
@@ -346,18 +393,26 @@ validate_dataset <- function(data) {
 }
 
 #' Visualization Helper Functions
-get_color_palette <- function(scheme, n) {
-  colors <- switch(scheme,
-                  "zissou" = wes_palette("Zissou1"),
-                  "darjeeling" = wes_palette("Darjeeling1"),
-                  "royal" = wes_palette("Royal1"),
-                  wes_palette("Zissou1")  # default
-  )
+get_color_palette <- function(scheme = NULL, n = 1) {
+  # Default to zissou if scheme is NULL, empty, or invalid
+  if (is.null(scheme) || nchar(scheme) == 0) {
+    scheme <- "zissou"
+  }
   
-  if(n <= length(colors)) {
-    return(colors[1:n])
+  # Ensure n is at least 1
+  n <- max(1, n)
+  
+  base_colors <- switch(scheme,
+                       "zissou" = wes_palette("Zissou1", 5),
+                       "darjeeling" = wes_palette("Darjeeling1", 5),
+                       "royal" = wes_palette("Royal1", 4),
+                       wes_palette("Zissou1", 5))  # default to zissou
+  
+  # If we need more colors than the base palette provides, interpolate
+  if (n > length(base_colors)) {
+    colorRampPalette(base_colors)(n)
   } else {
-    colorRampPalette(colors)(n)
+    base_colors[1:n]
   }
 }
 
@@ -429,6 +484,7 @@ grouping_choices <- c(
 color_by_choices <- c(
   "None" = "none",
   "Age Groups" = "age_group",
+  "Custom Age Groups" = "custom_age_group",
   "Sex" = "sex",
   "Dataset" = "dataset",
   "Age (continuous)" = "age"
@@ -442,5 +498,6 @@ color_schemes <- c(
 
 dataset_colors <- c(
   "BHARAT" = "#4682B4",  # Steel Blue
-  "ICPH" = "#FF8C00"     # Dark Orange
+  "ICPH" = "#FF8C00",    # Dark Orange
+  "External" = "#20B2AA"  # Light Sea Green
 )

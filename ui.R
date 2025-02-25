@@ -1,4 +1,22 @@
 # ui.R
+
+library(shiny)
+library(shinydashboard)
+library(plotly)
+library(DT)
+library(shinyBS)
+library(shinyjs)
+
+# Define any necessary variables here
+# For example:
+# - param_choices
+# - blood_params
+# - standard_age_groups
+# - grouping_choices
+# - color_by_choices
+# - color_schemes
+# - dataset_colors
+
 dashboardPage(
   skin = "blue",
   
@@ -81,7 +99,8 @@ dashboardPage(
       
       fluidRow(
         column(6,
-               textInput("group_name", "Group Name"),
+               textInput("group_name", "Group Name", 
+                        placeholder = "Enter a name for this group"),
                selectInput("group_ranges", "Select Age Ranges",
                           choices = c(
                             "18-29" = "18-29",
@@ -93,7 +112,12 @@ dashboardPage(
                           multiple = TRUE),
                actionButton("add_group", "Add Group", 
                           class = "btn-success",
-                          icon = icon("plus"))
+                          icon = icon("plus")),
+               tags$div(
+                 style = "margin-top: 15px;",
+                 tags$small(class = "text-muted",
+                          "Select multiple age ranges to combine into a custom group")
+               )
         ),
         column(6,
                h4("Current Custom Groups"),
@@ -101,7 +125,12 @@ dashboardPage(
                br(),
                actionButton("remove_selected_groups", "Remove Selected", 
                           class = "btn-danger",
-                          icon = icon("trash"))
+                          icon = icon("trash")),
+               tags$div(
+                 style = "margin-top: 15px;",
+                 tags$small(class = "text-muted",
+                          "Select a group and click 'Remove Selected' to delete it")
+               )
         )
       )
     ),
@@ -158,36 +187,63 @@ dashboardPage(
                   
                   # Parameter selection
                   selectizeInput("blood_param", "Select Parameter",
-                               choices = param_choices,
-                               multiple = FALSE),
+                                 choices = NULL,
+                                 multiple = FALSE),
                   
                   # Age range selection
                   checkboxGroupInput("selected_age_groups", "Select Age Groups",
-                                   choices = standard_age_groups,
-                                   selected = names(standard_age_groups)),
+                                   choices = c(
+                                     "18-29" = "18-29",
+                                     "30-44" = "30-44",
+                                     "45-59" = "45-59",
+                                     "60-74" = "60-74",
+                                     "75+" = "75+"
+                                   ),
+                                   selected = c("18-29", "30-44", "45-59", "60-74", "75+")),
                   
                   # Custom group creation
                   actionButton("show_group_modal", "Create Custom Groups",
-                             icon = icon("object-group"),
-                             class = "btn-info btn-sm"),
+                               icon = icon("object-group"),
+                               class = "btn-info btn-sm"),
                   
                   hr(),
                   
                   # Grouping selection
                   selectInput("grouping", "Group By",
-                            choices = grouping_choices,
-                            selected = "age"),
+                              choices = c(
+                                "Age Groups" = "age",
+                                "Sex" = "sex",
+                                "Age and Sex Combined" = "age_sex",
+                                "Custom Age Groups" = "custom_age",
+                                "Custom Age Groups and Sex" = "custom_age_sex"
+                              ),
+                              selected = "age"),
                   
                   # Secondary color option
                   selectInput("color_by", "Color Points By",
-                            choices = color_by_choices),
+                              choices = c(
+                                "None" = "none",
+                                "Age Groups" = "age_group",
+                                "Custom Age Groups" = "custom_age_group",
+                                "Sex" = "sex",
+                                "Dataset" = "dataset",
+                                "Age (continuous)" = "age"
+                              ),
+                              selected = "dataset"),
                   
                   # Color scheme selection
                   selectInput("color_scheme", "Color Scheme",
-                            choices = color_schemes),
+                              choices = c(
+                                "Zissou" = "zissou",
+                                "Darjeeling" = "darjeeling",
+                                "Royal" = "royal"
+                              ),
+                              selected = "zissou"),
                   
-                  # Plot controls
+                  # Show reference lines
                   checkboxInput("show_ref", "Show Reference Ranges", TRUE),
+                  
+                  # Show statistics
                   checkboxInput("show_stats", "Show Statistics", FALSE),
                   
                   # Plot type
@@ -196,7 +252,8 @@ dashboardPage(
                                "Box Plot" = "box",
                                "Violin Plot" = "violin",
                                "Scatter Plot" = "scatter"
-                             ))
+                             ),
+                             selected = "box")
                 ),
                 
                 box(
@@ -205,7 +262,9 @@ dashboardPage(
                   status = "primary",
                   solidHeader = TRUE,
                   div(class = "plot-container",
-                      plotlyOutput("blood_dist", height = "600px"))
+                      plotlyOutput("blood_dist", height = "600px")),
+                  # Display stats below the plot
+                  uiOutput("stats_info")
                 )
               )),
       
@@ -225,8 +284,14 @@ dashboardPage(
                                               selected = "BHARAT"),
                              
                              checkboxGroupInput("demo_age_groups", "Select Age Groups",
-                                              choices = standard_age_groups,
-                                              selected = names(standard_age_groups)),
+                                              choices = c(
+                                                "18-29" = "18-29",
+                                                "30-44" = "30-44",
+                                                "45-59" = "45-59",
+                                                "60-74" = "60-74",
+                                                "75+" = "75+"
+                                              ),
+                                              selected = c("18-29", "30-44", "45-59", "60-74", "75+")),
                              
                              actionButton("show_group_modal_demo", "Use Custom Groups",
                                         icon = icon("object-group"),
@@ -425,13 +490,24 @@ dashboardPage(
                     column(4,
                            # Age groups selection
                            checkboxGroupInput("stats_age_groups", "Select Age Groups",
-                                            choices = standard_age_groups,
-                                            selected = names(standard_age_groups))
+                                            choices = c(
+                                              "18-29" = "18-29",
+                                              "30-44" = "30-44",
+                                              "45-59" = "45-59",
+                                              "60-74" = "60-74",
+                                              "75+" = "75+"
+                                            ),
+                                            selected = c("18-29", "30-44", "45-59", "60-74", "75+"))
                     ),
                     column(4,
                            # Grouping controls
                            radioButtons("stats_grouping", "Compare By",
-                                      choices = grouping_choices,
+                                      choices = c(
+                                        "Age Groups" = "age",
+                                        "Sex" = "sex",
+                                        "Age and Sex Combined" = "combined",
+                                        "Custom Age Groups" = "custom"
+                                      ),
                                       inline = TRUE),
                            actionButton("show_group_modal_stats", "Use Custom Groups",
                                       icon = icon("object-group"),
@@ -454,8 +530,8 @@ dashboardPage(
                     ),
                     column(2,
                            actionButton("update_comparison", "Update Comparison",
-                                      icon = icon("refresh"),
-                                      class = "btn-primary btn-custom")
+                                        icon = icon("refresh"),
+                                        class = "btn-primary btn-custom")
                     )
                   ),
                   
