@@ -1,0 +1,407 @@
+# BHARAT Dashboard: Technical Specification
+## R Shiny Application for Multi-omics Data Analysis
+
+### SECTION 1: ENVIRONMENT SETUP
+
+## Required Libraries
+```r
+# Core functionality
+library(shiny)
+library(shinydashboard)
+library(tidyverse)
+library(plotly)
+library(DT)
+library(bslib)
+
+# Data analysis
+library(readxl)
+library(scales)
+library(viridis)
+library(wesanderson)
+library(effsize)
+library(rstatix)
+
+# UI enhancements
+library(showtext)
+library(sysfonts)
+library(shinyBS)
+library(shinyjs)
+library(factoextra)
+```
+
+### SECTION 2: DATA STRUCTURES
+
+## Core Data Files
+1. Personal Information.csv
+```r
+Structure:
+- Participant_ID (character): Unique identifier
+- age_years (numeric): Age in years
+- gender (factor): "Male" or "Female"
+```
+
+2. blood_test_results.csv
+```r
+Structure:
+- participant_id (character): Matches Participant_ID
+- [blood parameters] (numeric): Various blood test results
+```
+
+3. blood_test_metadata.csv
+```r
+Structure:
+- testname (character): Parameter name
+- testmeasuringunit (character): Measurement unit
+- testminrangevalue (numeric): Reference range minimum
+- testmaxrangevalue (numeric): Reference range maximum
+```
+
+## Integrated Dataset Format
+```r
+Required Columns:
+- participant_id (character)
+- age (numeric)
+- sex (factor): levels = c("Male", "Female")
+- age_group (factor): levels = c("18-29", "30-44", "45-59", "60-74", "75+")
+- dataset (character): Source identifier
+- group_combined (character): Combined age and sex grouping
+- [blood parameters] (numeric)
+```
+
+### SECTION 3: APPLICATION ARCHITECTURE
+
+## Global State (global.R)
+```r
+# Constants
+standard_age_groups <- c(
+  "18-29" = "18-29",
+  "30-44" = "30-44",
+  "45-59" = "45-59",
+  "60-74" = "60-74",
+  "75+" = "75+"
+)
+
+grouping_choices <- c(
+  "Age Groups" = "age",
+  "Sex" = "sex",
+  "Age and Sex Combined" = "combined",
+  "Custom Groups" = "custom"
+)
+
+color_by_choices <- c(
+  "None" = "none",
+  "Age Groups" = "age_group",
+  "Sex" = "sex",
+  "Dataset" = "dataset",
+  "Age (continuous)" = "age"
+)
+
+# Reactive Values (server.R)
+integration_state <- reactiveValues(
+  external_data = NULL,
+  mapping = NULL,
+  validation_result = NULL,
+  processed_data = NULL
+)
+
+custom_groups <- reactiveVal(list())
+integrated_datasets_rv <- reactiveVal(loadSavedDatasets())
+
+pca_state <- reactiveValues(
+  results = NULL,
+  selected_pc = NULL,
+  selected_params = NULL
+)
+```
+
+## Core Functions
+
+1. Data Processing
+```r
+standardize_age_group <- function(age) {
+  case_when(
+    age >= 18 & age <= 29 ~ "18-29",
+    age >= 30 & age <= 44 ~ "30-44",
+    age >= 45 & age <= 59 ~ "45-59",
+    age >= 60 & age <= 74 ~ "60-74",
+    age >= 75 ~ "75+",
+    TRUE ~ NA_character_
+  )
+}
+
+process_external_data <- function(data_path, mapping_df, dataset_name) {
+  # Implementation details in global.R
+  # Handles data loading, validation, and standardization
+}
+
+apply_custom_group <- function(data, custom_groups) {
+  # Implementation details in global.R
+  # Handles custom group application and ordering
+}
+```
+
+2. Analysis Functions
+```r
+compute_pca <- function(data, selected_params, scale = TRUE) {
+  # Implementation details in global.R
+  # Handles PCA computation and results formatting
+}
+
+calculate_group_statistics <- function(data, param, group_var) {
+  # Implementation details in global.R
+  # Handles statistical computations
+}
+```
+
+### SECTION 4: UI COMPONENTS
+
+## Tab Structure
+```r
+dashboardPage(
+  dashboardHeader(),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Overview"),
+      menuItem("Blood Parameters"),
+      menuItem("Demographics"),
+      menuItem("Data Integration"),
+      menuItem("PCA Analysis"),
+      menuItem("Statistical Summary")
+    )
+  ),
+  dashboardBody(
+    # Tab content implementations in ui.R
+  )
+)
+```
+
+## Key UI Elements
+
+1. Data Controls
+```r
+# Dataset Selection
+checkboxGroupInput("selected_datasets")
+
+# Parameter Selection
+selectizeInput("blood_param")
+
+# Common Parameters Filter
+checkboxInput("show_common_only")
+
+# Custom Groups Modal
+bsModal("groupModal")
+```
+
+2. Visualization Controls
+```r
+# Plot Type Selection
+radioButtons("plot_type")
+
+# Color Controls
+selectInput("color_by")
+selectInput("color_scheme")
+
+# Group Selection
+radioButtons("grouping")
+```
+
+### SECTION 5: SERVER LOGIC
+
+## Data Flow
+1. Data Loading
+```r
+# Load initial data
+personal_info <- read_csv("data/Personal Information.csv")
+blood_data <- read_csv("data/blood_test_results.csv")
+blood_metadata <- read_csv("data/blood_test_metadata.csv")
+
+# Process BHARAT data
+blood_data_with_demo <- blood_data %>%
+  left_join(personal_info) %>%
+  mutate(
+    dataset = "BHARAT",
+    group_combined = paste(age_group, sex)
+  )
+```
+
+2. Data Integration
+```r
+# Template generation
+output$download_template <- downloadHandler()
+
+# Data validation
+observeEvent(input$validate_integration, {
+  # Implementation in server.R
+})
+
+# Dataset integration
+observeEvent(input$integrate_data, {
+  # Implementation in server.R
+})
+```
+
+3. Visualization Pipeline
+```r
+# Data preparation
+prepare_plot_data <- reactive({
+  # Implementation in server.R
+  # Handles data filtering and preparation
+})
+
+# Plot generation
+output$blood_dist <- renderPlotly({
+  # Implementation in server.R
+  # Generates interactive plots
+})
+```
+
+### SECTION 6: FEATURES AND FUNCTIONALITY
+
+## Core Features
+
+1. Data Integration
+- External dataset upload
+- Column mapping
+- Validation
+- Integration management
+
+2. Analysis Capabilities
+- Parameter distribution analysis
+- Demographic analysis
+- PCA analysis
+- Statistical testing
+
+3. Visualization
+- Interactive plots
+- Multiple plot types
+- Customizable grouping
+- Color schemes
+
+## Implementation Details
+
+1. Dataset Integration Process
+```r
+Steps:
+1. Upload CSV
+2. Download mapping template
+3. Upload mapping
+4. Validate data
+5. Integrate dataset
+```
+
+2. Custom Group Creation
+```r
+Process:
+1. Open modal
+2. Enter group name
+3. Select age ranges
+4. Create group
+5. Apply to analysis
+```
+
+3. PCA Analysis
+```r
+Steps:
+1. Select datasets
+2. Choose parameters
+3. Compute PCA
+4. Visualize results
+5. Analyze loadings
+```
+
+### SECTION 7: IMPROVEMENT AREAS
+
+## Current Limitations
+
+1. Data Management
+- No persistence between sessions
+- Limited export capabilities
+- Basic validation checks
+
+2. Performance
+- Large dataset handling
+- PCA computation speed
+- Plot rendering optimization
+
+3. Visualization
+- Fixed color schemes
+- Limited plot customization
+- Basic interactivity
+
+## Recommended Enhancements
+
+1. Technical Improvements
+```r
+# Add data persistence
+saveRDS(integrated_datasets, "path/to/save")
+
+# Optimize PCA computation
+future_promise({compute_pca()})
+
+# Add export capabilities
+download_handler(type = c("csv", "excel"))
+```
+
+2. Feature Additions
+```r
+# Time series analysis
+# Machine learning integration
+# Advanced statistical tests
+# Custom visualization options
+```
+
+3. UI Enhancements
+```r
+# Responsive design
+# Interactive help system
+# Progress indicators
+# Better error messaging
+```
+
+### SECTION 8: DEVELOPMENT GUIDELINES
+
+## Code Organization
+```r
+# Function structure
+function_name <- function(param1, param2) {
+  # Input validation
+  # Main logic
+  # Error handling
+  # Return value
+}
+
+# Error handling
+tryCatch({
+  # Main logic
+}, error = function(e) {
+  # Error handling
+  showNotification(
+    paste("Error:", e$message),
+    type = "error"
+  )
+})
+
+# Documentation
+#' @param param1 Description
+#' @return Description
+#' @examples
+#' Example usage
+```
+
+## Testing Scenarios
+1. Data Validation
+- Missing values
+- Incorrect formats
+- Edge cases
+- Large datasets
+
+2. UI Testing
+- All interactive elements
+- Error messages
+- Plot updates
+- State persistence
+
+3. Performance Testing
+- Memory usage
+- Computation time
+- UI responsiveness

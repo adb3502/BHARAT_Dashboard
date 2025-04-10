@@ -1,0 +1,40 @@
+﻿Participant_ID,age_years,gender,last_menstrual_cycle_date,has_endocrine_disorder,occupation_category,income_category,marital_status,education_level
+1A-001,26,Male,,,Professional,"≥1,85,895 ",Single,Professional degree
+1A-002,26,Male,,,Professional,"≥1,85,895 ",Single,Graduate
+1A-004,22,Male,,,Unemployed,"≥1,85,895 ",Single,Graduate
+1A-005,17,Male,,,Unemployed,"≥1,85,895 ",Single,Intermediate/ diploma
+1A-006,24,Male,,,Professional,"≥1,85,895 ",Single,Graduate
+1A-007,27,Male,,,Professional,"27,883 – 46,474",Single,Professional degree
+1A-008,22,Male,,,Unemployed,"≥1,85,895 ",Single,Graduate
+1A-009,23,Male,,,Professional,"27,883 – 46,474",Single,Graduate
+1A-010,27,Male,,,Professional,"≥1,85,895 ",Single,Professional degree
+1B-001,23,Female,,,Professional,"92,951 - 1,85,894",Single,Graduate
+1B-002,29,Female,09/07/2024,No,Professional,"92,951 - 1,85,894",Married,Professional degree
+1B-003,28,Female,,,Professional,"≥1,85,895 ",Single,Graduate
+1B-004 ,22,Female,20/06/2024,Yes,Professional,"27,883 – 46,474",Single,Professional degree
+1B-005,24,Female,24/07/2024,No,Professional,"≥1,85,895 ",Single,Graduate
+1B-006,24,Female,,,Professional,"≥1,85,895 ",Single,Graduate
+1B-007,27,Female,24/06/2024,No,Professional,"≥1,85,895 ",Single,Professional degree
+1B-008,21,Female,,,Professional,"≥1,85,895 ",Single,High school
+1B-009,26,Female,26/06/2024,No,Professional,"92,951 - 1,85,894",Single,Professional degree
+1B-010,25,Female,24/06/2024,,Professional,"92,951 - 1,85,894",Single,Graduate
+2A-008,31,Male,,,Professional,"≥1,85,895 ",Single,Professional degree
+2A-009,30,Male,,,Professional,"≥1,85,895 ",Single,Graduate
+3B-001,59,Female,01/05/2024,,Semi professional,"≥1,85,895 ",Married,Professional degree
+3B-002,59,Female,01/09/2014,No,Unemployed,"27,883 – 46,474",Married,Graduate
+4A-001,71,Male,,,Unemployed,"≥1,85,895 ",Married,Graduate
+4A-002,70,Male,,,Unemployed,"≥1,85,895 ",Married,Professional degree
+4A-003,68,Male,,,Unemployed,"≥1,85,895 ",Married,Professional degree
+4A-004,65,Male,,,Unemployed,"9,308 – 27,882",Married,Graduate
+4A-005,62,Male,,,Semi professional,"≥1,85,895 ",Married,Graduate
+4B-001,73,Female,,,Unemployed,"≥1,85,895 ",Married,Graduate
+4B-002,74,Female,15/06/2000,No,Unemployed,"≥1,85,895 ",Widow/Widower,Intermediate/ diploma
+4B-003,68,Female,,,Unemployed,"≥1,85,895 ",Married,Graduate
+4B-004,62,Female,,,Unemployed,"≥1,85,895 ",Married,Graduate
+4B-005,75,Female,,,Unemployed,"≥1,85,895 ",Married,Graduate
+4B-006,62,Female,,No,Unemployed,"≥1,85,895 ",Married,Graduate
+4B-007,70,Female,10/01/2012,No,Unemployed,"≥1,85,895 ",Married,Middle school
+5A-001,81,Male,,,Professional,"≥1,85,895 ",Married,Professional degree
+5B-001,78,Female,,,Unemployed,"≥1,85,895 ",Married,Graduate
+5B-002,76,Female,,,Unemployed,"≥1,85,895 ",Married,Professional degree
+5B-004,82,Female,01/01/1974,No,Unemployed,"≥1,85,895 ",Divorced,Intermediate/ diploma
