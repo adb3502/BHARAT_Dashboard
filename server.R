@@ -198,8 +198,17 @@ prepare_plot_data <- reactive({
   
   # Update parameter selection
   observe({
+    choices <- filtered_params()
     updateSelectizeInput(session, "blood_param",
-                        choices = filtered_params(),
+                        choices = choices,
+                        server = TRUE)
+    
+    # Also update x_param and y_param choices for 2-parameter scatter
+    updateSelectizeInput(session, "x_param",
+                        choices = choices,
+                        server = TRUE)
+    updateSelectizeInput(session, "y_param",
+                        choices = choices,
                         server = TRUE)
   })
   
@@ -523,9 +532,137 @@ validate_custom_groups <- reactive({
   return(TRUE)
 })
 
-# Complete blood_dist render function with fixes for both ordering and overlapping boxplots
-# Simplified blood_dist render function
+# Function to render 2-parameter scatter plot with regression analysis
+render_2param_scatter <- reactive({
+  req(input$x_param, input$y_param, plot_data())
+  
+  # Get the data
+  data <- plot_data()
+  if(is.null(data) || nrow(data) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No data available for plotting."))
+  }
+  
+  # Check both parameters exist
+  if(!input$x_param %in% names(data) || !input$y_param %in% names(data)) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Selected parameters not available."))
+  }
+  
+  # Prevent same parameter selection
+  if(input$x_param == input$y_param) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "Please select different parameters for X and Y axes."))
+  }
+  
+  # Convert values to numeric and remove NAs
+  data <- data %>%
+    mutate(
+      x_val = as.numeric(.[[input$x_param]]),
+      y_val = as.numeric(.[[input$y_param]])
+    ) %>%
+    filter(!is.na(x_val), !is.na(y_val))
+  
+  if(nrow(data) == 0) {
+    return(plotly_empty(type = "scatter", mode = "markers") %>%
+             layout(title = "No numeric data available after filtering."))
+  }
+  
+  # Handle coloring
+  if(input$color_by == "dataset") {
+    data$point_color <- data$dataset
+  } else if(input$color_by == "age_group") {
+    data$point_color <- data$age_group
+  } else if(input$color_by == "sex") {
+    data$point_color <- data$sex
+  } else if(input$color_by == "age") {
+    data$point_color <- as.character(data$age)
+  } else if(input$color_by == "custom_age_group" && "custom_group" %in% names(data)) {
+    data$point_color <- data$custom_group
+  } else {
+    data$point_color <- "All Data"
+  }
+  
+  # Calculate correlation and regression if requested
+  correlation_stats <- ""
+  if(input$show_correlation) {
+    cor_test <- cor.test(data$x_val, data$y_val)
+    correlation_stats <- sprintf(
+      "r = %.3f, p = %.2e, R² = %.3f",
+      cor_test$estimate,
+      cor_test$p.value,
+      cor_test$estimate^2
+    )
+  }
+  
+  # Create tooltip
+  data$tooltip <- paste(
+    "ID:", data$participant_id,
+    "\n", str_to_title(str_replace_all(input$x_param, "_", " ")), ":", round(data$x_val, 2),
+    "\n", str_to_title(str_replace_all(input$y_param, "_", " ")), ":", round(data$y_val, 2),
+    "\nGroup:", data$point_color
+  )
+  
+  # Create base plot
+  p <- ggplot(data, aes(x = x_val, y = y_val))
+  
+  # Add regression line if requested
+  if(input$show_regression) {
+    p <- p + geom_smooth(method = "lm", se = TRUE, color = "red", alpha = 0.3)
+  }
+  
+  # Add colored points
+  if(input$color_by == "age") {
+    p <- p + geom_point(aes(color = as.numeric(point_color), text = tooltip), 
+                       alpha = 0.7, size = 3) +
+      scale_color_gradientn(colors = colorRampPalette(c("#FFB6C1", "#4682B4"))(100),
+                           name = "Age")
+  } else if(input$color_by != "none") {
+    p <- p + geom_point(aes(color = point_color, text = tooltip), 
+                       alpha = 0.7, size = 3) +
+      scale_color_manual(values = get_color_palette(input$color_scheme, 
+                                                  length(unique(data$point_color))),
+                        name = str_to_title(str_replace_all(input$color_by, "_", " ")))
+  } else {
+    p <- p + geom_point(aes(text = tooltip), alpha = 0.7, size = 3, color = "#4682B4")
+  }
+  
+  # Add labels and theme
+  p <- p +
+    theme_minimal() +
+    labs(
+      title = paste(
+        "2-Parameter Analysis:",
+        str_to_title(str_replace_all(input$y_param, "_", " ")),
+        "vs",
+        str_to_title(str_replace_all(input$x_param, "_", " "))
+      ),
+      subtitle = if(input$show_correlation) correlation_stats else NULL,
+      x = str_to_title(str_replace_all(input$x_param, "_", " ")),
+      y = str_to_title(str_replace_all(input$y_param, "_", " "))
+    ) +
+    theme(
+      text = element_text(family = "sans-serif"),
+      plot.title = element_text(hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
+  
+  # Convert to plotly
+  ggplotly(p, tooltip = "text") %>%
+    layout(
+      font = list(family = "sans-serif"),
+      margin = list(b = 100, t = 100, r = 100, l = 80)
+    ) %>%
+    config(displayModeBar = TRUE)
+})
+
+# Complete blood_dist render function with 2-parameter scatter plot support
 output$blood_dist <- renderPlotly({
+  # Handle 2-parameter scatter plot differently
+  if(input$plot_type == "scatter_2param") {
+    return(render_2param_scatter())
+  }
+  
   req(plot_data(), input$color_by)
   
   # Get the data

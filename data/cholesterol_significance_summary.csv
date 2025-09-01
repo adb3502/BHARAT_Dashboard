@@ -1,0 +1,28 @@
+Comparison,Metric,P_Value,Is_Significant
+18-29 vs 30-44,Total Cholesterol,0.6702378905449344,FALSE
+18-29 vs 45-59,Total Cholesterol,0.10257478628005887,FALSE
+18-29 vs 60-75,Total Cholesterol,0.18105684897118143,FALSE
+18-29 vs 75+,Total Cholesterol,2.2175360778226152e-5,TRUE
+Young vs Old,Total Cholesterol,0.004274452393120118,TRUE
+18-29 vs 30-44,HDL Cholesterol,0.8331882354617429,FALSE
+18-29 vs 45-59,HDL Cholesterol,0.0873465198404152,FALSE
+18-29 vs 60-75,HDL Cholesterol,0.24733293192553182,FALSE
+18-29 vs 75+,HDL Cholesterol,0.4590929945264294,FALSE
+Young vs Old,HDL Cholesterol,0.20096055649027714,FALSE
+18-29 vs 30-44,LDL Cholesterol,0.7039751306627928,FALSE
+18-29 vs 45-59,LDL Cholesterol,0.07948645931030036,FALSE
+18-29 vs 60-75,LDL Cholesterol,0.7246818964771913,FALSE
+18-29 vs 75+,LDL Cholesterol,0.13560918092036794,FALSE
+Young vs Old,LDL Cholesterol,0.3377872088624855,FALSE
+Young Male vs Young Female,Total Cholesterol,0.8159386202553268,FALSE
+Old Male vs Old Female,Total Cholesterol,0.5526252536632976,FALSE
+Young Male vs Old Male,Total Cholesterol,0.06977222673637637,FALSE
+Young Female vs Old Female,Total Cholesterol,0.025527904955160878,TRUE
+Young Male vs Young Female,HDL Cholesterol,0.007591367518689617,TRUE
+Old Male vs Old Female,HDL Cholesterol,0.008569030592742057,TRUE
+Young Male vs Old Male,HDL Cholesterol,0.03404494248696209,TRUE
+Young Female vs Old Female,HDL Cholesterol,0.18998355942415074,FALSE
+Young Male vs Young Female,LDL Cholesterol,0.6172784629172221,FALSE
+Old Male vs Old Female,LDL Cholesterol,0.28763773172556784,FALSE
+Young Male vs Old Male,LDL Cholesterol,0.14020847757684232,FALSE
+Young Female vs Old Female,LDL Cholesterol,0.20368056563883033,FALSE

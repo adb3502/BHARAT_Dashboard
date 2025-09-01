@@ -251,9 +251,25 @@ dashboardPage(
                              choices = c(
                                "Box Plot" = "box",
                                "Violin Plot" = "violin",
-                               "Scatter Plot" = "scatter"
+                               "Scatter Plot" = "scatter",
+                               "2-Parameter Scatter" = "scatter_2param"
                              ),
-                             selected = "box")
+                             selected = "box"),
+                  
+                  # 2-parameter scatter plot controls (conditional)
+                  conditionalPanel(
+                    condition = "input.plot_type == 'scatter_2param'",
+                    hr(),
+                    h5("2-Parameter Analysis"),
+                    selectizeInput("x_param", "X-axis Parameter",
+                                   choices = NULL,
+                                   multiple = FALSE),
+                    selectizeInput("y_param", "Y-axis Parameter", 
+                                   choices = NULL,
+                                   multiple = FALSE),
+                    checkboxInput("show_regression", "Show Regression Line", TRUE),
+                    checkboxInput("show_correlation", "Show Correlation Stats", TRUE)
+                  )
                 ),
                 
                 box(
